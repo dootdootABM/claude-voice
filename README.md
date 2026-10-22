@@ -290,3 +290,7 @@ also stored in the state dir. Claude Code keeps its own transcripts in `~/.claud
 - On CPU, speech recognition uses a smaller model and replies are slower. Only NVIDIA GPUs are accelerated.
 - Windows permission rules are regex-based and miss obfuscated commands (see above).
 - English only (Whisper is called with `language="en"`).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
