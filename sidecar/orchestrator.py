@@ -26,6 +26,7 @@ the repo, so a fresh orchestrator can carry on from them.
 """
 
 import asyncio
+import itertools
 import json
 import os
 import re
@@ -42,6 +43,9 @@ from agents import SHELL_TOOLS, prompt_note, Backend, STATE_DIR, Task, decided_b
 # one job from eating the plan's 5-hour and weekly limits. Never spoken as money.
 BUDGET_WARN = 0.8
 CHECK_TIMEOUT_S = 120
+# Order of events (a worker finishing, a piece marked done): a counter, not the clock, whose ticks on Windows are
+# ~15 ms apart, so a builder and its reviewer could seem to finish at the same moment.
+ORDER = itertools.count(1)
 FRESH_AFTER = 40_000  # tokens: past this, a finished piece hands the job on to a fresh orchestrator
 READ_TOOLS = {"Read", "Grep", "Glob", "LS", "WebSearch", "WebFetch", "TodoWrite", "ToolSearch", "NotebookRead"}
 WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
@@ -138,7 +142,7 @@ def state_dir(project_dir):
 class Worker:
     def __init__(self, kind, brief, description):
         self.kind, self.brief, self.description = kind, brief, description
-        self.running, self.finished_at = True, 0.0
+        self.running, self.finished_at = True, 0  # finished_at: an ORDER number
         self.files = set()  # files it edited
         self.commands = []
 
@@ -157,7 +161,7 @@ class JobBackend(Backend):
         self.workers = {}  # agent_id → Worker
         self.dir = state_dir(task.project_dir)
         self.proc_cost = 0.0  # this process's running total (Claude Code reports it cumulatively)
-        self.marked_at = 0.0  # when the last piece was marked done
+        self.marked_at = 0  # ORDER number of the last mark_done
         self.hand_on = False  # set by mark_done in a long conversation: the next round end starts a fresh one
 
     # ---- hooks ------------------------------------------------------------------------------------------
@@ -235,7 +239,7 @@ class JobBackend(Backend):
         if not any(w.kind == "reviewer" and not w.running and w.finished_at > last for w in self.workers.values()):
             return "Refused: a reviewer has to check the last builder's work first. Run one, then call mark_done."
         files = sorted({f for w in piece for f in w.files})
-        self.marked_at = time.monotonic()
+        self.marked_at = next(ORDER)
         done = self.done_list() + [{"piece": args.get("piece", ""), "summary": args.get("summary", ""),
                                     "files": files, "at": time.strftime("%Y-%m-%d %H:%M")}]
         with open(self._path("done.json"), "w", encoding="utf-8") as f:
@@ -272,7 +276,7 @@ class JobBackend(Backend):
             w = self.workers.get(ev.get("task_id"))
             status = (ev.get("patch") or {}).get("status") or ev.get("status")
             if w and w.running and status in ("completed", "failed", "stopped", "killed", "error"):
-                w.running, w.finished_at = False, time.monotonic()
+                w.running, w.finished_at = False, next(ORDER)
                 self.app.ui.dim(f"  {self.task.id} │ ■ {w.kind} {status}: {w.description}")
                 self.task.digest.append(f"{w.kind} {status}: {w.description[:60]}")
         elif t == "result":

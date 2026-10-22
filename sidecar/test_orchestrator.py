@@ -29,7 +29,7 @@ def backend():
     b.task = types.SimpleNamespace(id="t1", project_dir=project, digest=[], plan="1. a piece",
                                    budget=10.0, spent_before=0.0, check_cost=0.0, context=0, prompt="the job")
     b.app = types.SimpleNamespace(ui=types.SimpleNamespace(dim=lambda m: None, status=lambda m: None))
-    b.dir, b.workers, b.uses, b.proc_cost, b.marked_at = o.state_dir(b.task.project_dir), {}, {}, 0.0, 0.0
+    b.dir, b.workers, b.uses, b.proc_cost, b.marked_at = o.state_dir(b.task.project_dir), {}, {}, 0.0, 0
     b.checked = []
     b.hand_on, b.carry_on = False, False
 
@@ -174,5 +174,7 @@ def test_not_read_only(command):
 
 
 def test_job_rules(monkeypatch):
+    # A frozen clock: worker order must not depend on it (Windows' clock ticks ~15 ms apart).
+    monkeypatch.setattr(o.time, "monotonic", lambda: 5.0)
     monkeypatch.setattr(o.Backend, "_on_event", lambda self, ev: None)  # the base class's transcript output isn't under test
     asyncio.run(main())
