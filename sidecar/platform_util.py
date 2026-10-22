@@ -22,7 +22,7 @@ CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
 
 
 def is_windows():
-    return sys.platform.startswith("win") or os.name == "nt"
+    return sys.platform.startswith("win")  # (not os.name: tests switch platforms by patching sys.platform)
 
 
 # ---- state ---------------------------------------------------------------------------------------------------

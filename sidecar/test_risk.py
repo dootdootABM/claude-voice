@@ -189,7 +189,7 @@ def test_nested_execution():
         r'Write-Output "$(ri -r C:\y)"',
         r'echo "$(del C:\Windows\x)"',
         r"echo hi && echo $(rd /s /q C:\y)",
-        "echo `rd /s /q /tmp/x`",
+        "echo `rd /s /q /srv/x`",  # not under /tmp: a forced delete in the temp folder is allowed
     ]
     for c in NESTED_ASK:
         for tool in ("Bash", "PowerShell"):
