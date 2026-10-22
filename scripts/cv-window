@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# cv-window — the Rofi launcher for Claude Voice. Focuses the window if it's open, otherwise opens it in a floating
+# kitty window (class claude-voice; the float/size/centre rule is in ~/.config/hypr/rules.lua).
+set -uo pipefail
+
+if hyprctl clients -j | jq -e 'any(.[]; .class == "claude-voice")' >/dev/null; then
+    hyprctl dispatch 'hl.dsp.focus({window="class:^claude-voice$"})' >/dev/null
+    exit 0
+fi
+
+exec kitty --class claude-voice --title "Claude Voice" "$(dirname "$(readlink -f "$0")")/cv"

@@ -1,0 +1,32 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]   # requires-python >=3.12
+    env:
+      PYTHONUTF8: "0"   # prove the tests do not depend on a UTF-8 default (Windows is cp1252 anyway)
+    defaults:
+      run:
+        working-directory: sidecar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install (CPU extra + dev group; no GPU libraries, no models)
+        run: uv sync --extra cpu --group dev --python ${{ matrix.python }}
+      - name: Run tests (no audio device, no models, no microphone)
+        run: uv run --no-sync pytest -q -ra
+      - name: Run tests again under the C locale (Linux only; Windows ignores LC_ALL)
+        if: runner.os != 'Windows'
+        env:
+          LC_ALL: C
+        run: uv run --no-sync pytest -q -ra

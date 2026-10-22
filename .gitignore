@@ -1,0 +1,29 @@
+.venv/
+__pycache__/
+sidecar/models/
+
+# Secrets / environment
+.env
+.env.*
+
+# Python bytecode, caches, logs
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.log
+*.jsonl
+
+# Editor / OS
+.claude/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Large binary / media artifacts
+*.wav
+*.onnx
+*.bin
+
+# Test fixtures are data, not logs
+!sidecar/testdata/*.jsonl

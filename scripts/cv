@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# cv — Claude Voice: the hands-free voice assistant. `cv --plain` for the text UI, `cv --help` for options.
+# If a task asks the app to restart itself (exit code 75), this loop runs the task's pending command while the app
+# is down and then starts it again in the same terminal, where it resumes the task.
+set -uo pipefail
+# uv and claude live in ~/.local/bin, which isn't on PATH when started from Rofi/Hyprland.
+export PATH="$HOME/.local/bin:$PATH"
+SIDECAR="$(dirname "$(readlink -f "$0")")/../sidecar"
+run() { uv run --quiet --no-sync --project "$SIDECAR" python "$SIDECAR/$1" "${@:2}"; }
+
+# `cv ptt down|up|toggle` presses the push-to-talk key of the running app; it must not start a second copy.
+if [ "${1:-}" = "ptt" ]; then
+    run ptt_cli.py "${@:2}"
+    exit $?
+fi
+
+while true; do
+    run tui.py "$@"
+    code=$?
+    [ "$code" -eq 75 ] || exit "$code"
+    run restart_job.py || echo "  (restart job failed; starting Claude Voice anyway)"
+done

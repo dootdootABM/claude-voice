@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# try-fresh — run this copy of Claude Voice as a brand-new user would: a throwaway config and state folder, so your
+# real config (~/.config/claude-voice) and saved tasks (~/.local/state/claude-voice) are never read or touched.
+# The first run creates the config from config.example.yaml, as it would for anyone. Arguments go to cv.
+# `try-fresh --keep` reuses the last throwaway folder instead of starting clean.
+set -uo pipefail
+HERE="$(dirname "$(readlink -f "$0")")"
+BASE="${TMPDIR:-/tmp}/claude-voice-fresh"
+if [ "${1:-}" = "--keep" ]; then shift; else rm -rf "$BASE"; fi
+mkdir -p "$BASE/state"
+export CLAUDE_VOICE_CONFIG="$BASE/config.yaml" CLAUDE_VOICE_STATE_DIR="$BASE/state"
+echo "try-fresh: config $CLAUDE_VOICE_CONFIG, state $CLAUDE_VOICE_STATE_DIR"
+exec "$HERE/cv" "$@"

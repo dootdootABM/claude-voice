@@ -1,0 +1,3 @@
+# CPU-only install: base dependencies plus plain onnxruntime.
+-r requirements.txt
+onnxruntime

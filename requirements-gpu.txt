@@ -1,0 +1,10 @@
+# NVIDIA GPU install: base dependencies plus onnxruntime-gpu (Linux and Windows).
+# pip users: `onnxruntime` shares a module name with onnxruntime-gpu. If plain onnxruntime got installed, run
+#   pip uninstall -y onnxruntime
+#   pip install --force-reinstall --no-deps onnxruntime-gpu
+# (uninstalling removes files the GPU package also owns, hence the reinstall). Do not install this together with requirements-cpu.txt.
+-r requirements.txt
+# audio.py imports `nvidia` and preloads cuBLAS/cuDNN from these wheels, so no system CUDA install is needed
+nvidia-cublas-cu12>=12.9.2.10; sys_platform == 'linux' or sys_platform == 'win32'
+nvidia-cudnn-cu12>=9,<10; sys_platform == 'linux' or sys_platform == 'win32'
+onnxruntime-gpu[cuda,cudnn]>=1.31.0; sys_platform == 'linux' or sys_platform == 'win32'

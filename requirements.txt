@@ -1,0 +1,22 @@
+# Claude Voice -- Python dependencies (base, all platforms).
+# The primary, locked way to install is uv with sidecar/pyproject.toml and sidecar/uv.lock:
+#   cd sidecar && uv sync --extra cpu    (or --extra gpu for NVIDIA CUDA)
+# For pip users: `pip install -r requirements-cpu.txt` or `-r requirements-gpu.txt` (Python 3.12+).
+# This base file has no onnxruntime; the cpu/gpu files add one.
+faster-whisper>=1.2.1
+kokoro-onnx>=0.6.1
+numpy>=2.5.4
+sounddevice>=0.5.6
+textual>=8.2.8
+# imported directly (show_output.py, tui.py); installed with textual, listed so the imports are covered
+rich
+markdown-it-py
+platformdirs
+portalocker
+# the config file (config.yaml)
+pyyaml
+# clipboard access on Windows
+pyperclip; sys_platform == 'win32'
+# optional, only for input.global_ptt_key (a system-wide push-to-talk key):
+#   pynput                          (Windows, macOS, Linux/X11)
+#   evdev; sys_platform == 'linux'  (Linux/Wayland; needs the 'input' group)

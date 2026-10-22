@@ -1,0 +1,44 @@
+[project]
+name = "claude-voice-sidecar"
+version = "0.1.0"
+description = "Voice front end for Claude Code"
+requires-python = ">=3.12"
+dependencies = [
+    "faster-whisper>=1.2.1",
+    "kokoro-onnx>=0.6.1",
+    "markdown-it-py",
+    "numpy>=2.5.4",
+    "platformdirs",
+    "portalocker",
+    "pyyaml",
+    "pyperclip; sys_platform == 'win32'",
+    "rich",
+    "sounddevice>=0.5.6",
+    "textual>=8.2.8",
+]
+
+[project.optional-dependencies]
+cpu = ["onnxruntime"]
+# Optional: a system-wide push-to-talk key (input.global_ptt_key). Imported only when that key is set.
+hotkey = ["pynput"]                                        # Windows, macOS, Linux/X11
+hotkey-wayland = ["evdev; sys_platform == 'linux'"]        # Linux/Wayland: reads /dev/input, needs the 'input' group
+gpu = [
+    "nvidia-cublas-cu12>=12.9.2.10; sys_platform == 'linux' or sys_platform == 'win32'",
+    "nvidia-cudnn-cu12>=9,<10; sys_platform == 'linux' or sys_platform == 'win32'",
+    "onnxruntime-gpu[cuda,cudnn]>=1.31.0; sys_platform == 'linux' or sys_platform == 'win32'",
+]
+
+[tool.uv]
+conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]
+override-dependencies = ["onnxruntime; extra == 'cpu'"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+norecursedirs = [".venv", "models", "testdata", "__pycache__"]
+markers = [
+    "linux_only: needs Linux (Hyprland, tty, POSIX signals); skipped elsewhere",
+]

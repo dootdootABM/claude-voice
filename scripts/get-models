@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# get-models — fetch the Kokoro text-to-speech files into sidecar/models/ (see sidecar/get_models.py).
+# `get-models --cpu` for a machine without CUDA; `get-models --from DIR` to take them from another copy.
+set -euo pipefail
+SIDECAR="$(dirname "$(readlink -f "$0")")/../sidecar"
+exec "$(command -v python3 || command -v python)" "$SIDECAR/get_models.py" "$@"
