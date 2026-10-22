@@ -354,9 +354,10 @@ class Tts:
         kokoro.create("Warm up.", voice=voice, lang=lang)  # first CUDA run builds kernels
         return kokoro, session.get_providers()[0]
 
-    def __init__(self, player, loaded=None, speed=1.05, lang="en-us"):
+    def __init__(self, player, loaded=None, speed=1.05, lang="en-us", pronounce=None):
         self.kokoro, self.device = loaded or self.load()
         self.speed, self.lang = speed, lang
+        self.pronounce = pronounce or {}  # voice.pronounce: the user's own fix-ups, on top of PRONOUNCE
         self._blends = {}
         self.player = player
         self.queue = asyncio.Queue()
@@ -378,7 +379,7 @@ class Tts:
         return self._blends[voice]
 
     def say(self, text, voice, speaker=""):
-        text = clean_for_speech(text)
+        text = clean_for_speech(text, self.pronounce)
         if text:
             self.queue.put_nowait((self.generation, text, voice, speaker))
 
@@ -410,30 +411,48 @@ class Tts:
             finally:
                 self.synthesizing = False
             if gen == self.generation:
-                self.player.play(audio)
+                # Clips are spoken one by one, so add the pause Kokoro itself puts between sentences (or clauses);
+                # back to back they ran together.
+                pause = SENTENCE_PAUSE_S if text.rstrip().endswith((".", "!", "?")) else CLAUSE_PAUSE_S
+                self.player.play(np.concatenate([audio, np.zeros(int(pause * TTS_SR), dtype=np.float32)]))
                 if self.on_play:
                     cb, self.on_play = self.on_play, None
                     cb(speaker)
 
 
-def clean_for_speech(text):
+SENTENCE_PAUSE_S, CLAUSE_PAUSE_S = 0.25, 0.1  # Kokoro's own pauses after a sentence and after a clause
+# Words the phonemizer gets wrong in cv's usual talk (checked against Kokoro's espeak phonemes). voice.pronounce in the
+# config adds to these or overrides them. Keys match whole words, case-sensitively.
+PRONOUNCE = {"README": "read me", "pytest": "pie test", "CI": "C I", "TUI": "T U I", "vs": "versus",
+             "vs.": "versus", "e.g.": "for example", "i.e.": "that is", "~/": "home folder ", "WSL": "W S L"}
+FILE_EXT = re.compile(r"\b([\w-]+)\.(py|md|yaml|yml|json|toml|txt|sh|js|ts|rs|go|cmd|ps1|log)\b")
+
+
+def clean_for_speech(text, pronounce=None):
     text = re.sub(r"```.*?(```|$)", " ", text, flags=re.S)  # code blocks are never read out
     text = re.sub(r"https?://\S+", "link", text)
     text = re.sub(r"[`*_#>|]+", "", text)
     text = text.replace("—", ", ")
+    text = FILE_EXT.sub(r"\1 dot \2", text)  # audio.py: "audio dot py", not one run-together word
+    for word, say in {**PRONOUNCE, **(pronounce or {})}.items():  # whole words: a boundary where the word has one
+        before = r"(?<![\w~])" if re.match(r"\w", word) else ""
+        after = r"(?!\w)" if re.search(r"\w$", word) else ""
+        text = re.sub(before + re.escape(word) + after, say.replace("\\", "\\\\"), text)
     return re.sub(r"\s+", " ", text).strip()
 
 
 class SentenceSplitter:
     """Feed streaming text, get back complete sentences (skips text inside open code fences).
 
-    The first chunk of a reply is released early, at the first clause break (or after ~70 characters), so speech
-    can start before the first sentence has finished streaming. Later chunks are whole sentences, which sound better.
+    Kokoro speaks each chunk on its own, with the falling tone of a finished sentence at its end, so chunks end only
+    where a sentence does (not at a colon). The one exception is the first chunk of a reply: it may end at a clause
+    break (a comma, semicolon or dash after at least FIRST_MIN characters), so speech starts before the first sentence
+    has finished streaming. It is never cut mid-phrase.
     """
 
-    END = re.compile(r"(?<=[.!?:])\s+|\n{2,}")
-    CLAUSE = re.compile(r"[,;:—]\s")
-    FIRST_MIN, FIRST_MAX = 18, 70
+    END = re.compile(r"(?<=[.!?])\s+|\n{2,}")
+    CLAUSE = re.compile(r"[,;—]\s")
+    FIRST_MIN = 30
 
     def __init__(self):
         self.buf = ""
@@ -449,8 +468,6 @@ class SentenceSplitter:
         out = [p for p in parts if p.strip()]
         if self.first and not out:
             cut = next((m.end() for m in self.CLAUSE.finditer(self.buf) if m.start() >= self.FIRST_MIN), None)
-            if cut is None and len(self.buf) > self.FIRST_MAX:
-                cut = self.buf.rfind(" ", 0, self.FIRST_MAX) + 1 or None
             if cut:
                 out, self.buf = [self.buf[:cut]], self.buf[cut:]
         if out:
@@ -506,6 +523,7 @@ class Listener:
     CLIP_WARN = 0.3  # share of an utterance's frames at full scale before warning once that the mic is too hot
     LEAD_IN = np.zeros(int(MIC_SR * 0.2), dtype=np.float32)  # Whisper drops a first word that starts at the edge
     DUCK = 0.25
+    DUCK_AFTER = 2  # speech-like frames (~64 ms) before the voice ducks: one frame was enough for its own echo to dip it
 
     # Push to talk (input.mode = push_to_talk): the key, not the VAD, decides what is recorded. Holds shorter than TAP_S
     # are taps and are ignored; a hold longer than PTT_MAX_S is ended for you.
@@ -649,9 +667,13 @@ class Listener:
                 # Barge-in: duck the voice on the first speech-like frame (instant feedback), stop it once 3 frames
                 # (~96 ms) confirm, and restore the volume if it was just a blip. headphone tests
                 # showed background noise at ~0.0 and real speech at 0.9+, so 0.5 is a safe threshold.
+                if p <= 0.5 and voiced >= self.DUCK_AFTER and self.tts.speaking:
+                    # It ducked, then the sound stopped short of a barge-in: most likely the mic heard the voice itself
+                    # (speakers, no headphones). Logged, since each dip is heard as a word sounding off or cut.
+                    cvlog.log.event("voice-dip", f"{voiced * FRAME_S * 1000:.0f} ms, vad {p:.2f}")
                 voiced = voiced + 1 if p > 0.5 else 0
                 player = self.tts.player
-                player.gain = self.DUCK if voiced and self.tts.speaking else 1.0
+                player.gain = self.DUCK if voiced >= self.DUCK_AFTER and self.tts.speaking else 1.0
                 if voiced >= 3:
                     loud, loud_vad = 0, 0.0
                     self.in_speech = True

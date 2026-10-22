@@ -36,7 +36,7 @@ DEFAULTS = {
     },
     "behaviour": {"verbosity": "normal", "auto_show_output": True, "half_duplex": False},
     "models": {"front": "haiku", "backend": "sonnet", "job": "sonnet", "scout": "haiku", "checker": "sonnet"},
-    "voice": {"name": "af_bella", "blend": {}, "speed": 1.05, "lang": "en-us"},
+    "voice": {"name": "af_bella", "blend": {}, "speed": 1.05, "lang": "en-us", "pronounce": {}},
     "stt": {"device": "auto", "model": None, "fast_model": True},
     "input": {"mode": "always_listening", "ptt_key": "v", "global_ptt_key": None},
     "prompts": dict(PROMPTS),
@@ -65,6 +65,7 @@ COMMENTS = {
     "voice.name": "Any voice in models/voices-v1.0.bin.",
     "voice.blend": "Optional mix of voices, e.g. {af_bella: 0.6, af_heart: 0.4}. When set it replaces voice.name.",
     "voice.speed": "Speaking speed, 0.5 to 2.0.",
+    "voice.pronounce": 'Your own pronunciation fixes, word: how to say it, e.g. {rmpc: "R M P C", Nginx: "engine X"}.',
     "voice.lang": "Language of the text it speaks (en-us, en-gb, fr-fr, it, ja, cmn, ...).",
     "stt": "Speech recognition (Whisper).",
     "stt.device": "auto | cuda | cpu. auto uses an NVIDIA GPU when there is one.",
@@ -270,6 +271,13 @@ def _check(data, user, lines, voices, errors, warnings, label):
                 err("voice.blend", f"the weight of {name!r} must be a number above 0, not {w!r}")
             elif msg := voice_problem(str(name), voices):
                 err("voice.blend", msg)
+    say = g("voice.pronounce")
+    if say is None:
+        data["voice"]["pronounce"] = say = {}
+    if not isinstance(say, dict) or not all(isinstance(v, (str, int, float)) and str(v).strip() for v in say.values()):
+        err("voice.pronounce", f'{say!r} is not a mapping of word: how to say it, like {{rmpc: "R M P C"}}')
+    else:  # YAML reads some keys as numbers or booleans (yes: ...); they are words here
+        data["voice"]["pronounce"] = {str(k): str(v) for k, v in say.items()}
     # prompts
     prompts = data["prompts"]
     for key, text in list(prompts.items()):
@@ -434,8 +442,8 @@ def example_text():
             if sec == "prompts":
                 body = v.strip("\n").split("\n")
                 out += [f"  {k}: |-"] + [("    " + ln) if ln else "" for ln in body]
-            elif k == "blend":
-                out.append("  blend: {}")
+            elif k in ("blend", "pronounce"):
+                out.append(f"  {k}: {{}}")
             elif isinstance(v, list):
                 out.append(f"  {k}: [" + ", ".join(_scalar(i) for i in v) + "]")
             else:

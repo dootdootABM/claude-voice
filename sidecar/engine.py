@@ -147,7 +147,7 @@ class Engine:
         if stt:
             self.stt = stt[0]
         self.player = Player()
-        self.tts = tts = Tts(self.player, loaded, cfg["voice"]["speed"], cfg["voice"]["lang"])
+        self.tts = tts = Tts(self.player, loaded, cfg["voice"]["speed"], cfg["voice"]["lang"], cfg["voice"]["pronounce"])
         app.tts = tts
 
         if not self.opts.no_mic:

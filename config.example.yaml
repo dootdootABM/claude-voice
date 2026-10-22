@@ -50,6 +50,8 @@ voice:
   speed: 1.05
   # Language of the text it speaks (en-us, en-gb, fr-fr, it, ja, cmn, ...).
   lang: "en-us"
+  # Your own pronunciation fixes, word: how to say it, e.g. {rmpc: "R M P C", Nginx: "engine X"}.
+  pronounce: {}
 
 # Speech recognition (Whisper).
 stt:
