@@ -71,11 +71,11 @@ def fmt_tokens(n):
 def short_path(path, cwd=None):
     """A path as Claude Code shows it: relative to the project, else with ~ for home."""
     path = str(path or "")
-    if cwd and os.path.isabs(path):
+    if cwd and (path[:1] in ("/", "\\") or os.path.splitdrive(path)[0]):  # rooted (isabs varies on Windows)
         try:
             rel = os.path.relpath(path, cwd)
             if not rel.startswith(".."):
-                return rel
+                return rel.replace(os.sep, "/") if "/" in path and "\\" not in path else rel  # keep its own slashes
         except ValueError:  # another drive (Windows)
             pass
     home = os.path.expanduser("~")
