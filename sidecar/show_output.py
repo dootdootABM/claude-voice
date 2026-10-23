@@ -35,6 +35,7 @@ from textual.widget import Widget
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
+import art_fix
 import orb
 from theme import Theme, mix
 
@@ -234,6 +235,7 @@ class Renderer:
 
     def art(self, src):
         p = self.p
+        src = art_fix.fix(src)  # square up boxes whose rows the model counted off by a cell or two
         art = Text(src, style=p.hex("foreground"), no_wrap=True, overflow="ignore")
         art.highlight_regex(LINES, p.hex("accent2"))
         art.highlight_regex(ARROWS, f"bold {p.hex('accent')}")

@@ -242,7 +242,7 @@ prompts:
 
   # Added to a task whose answer you want to read on screen.
   show_note: |-
-    The user will read your final message on screen (rendered as Markdown), so make it the complete answer, not a summary: headings, file paths and short code excerpts where they help. They love terminal art: wherever a picture explains better than words (architecture, data flow, a pipeline, a state machine, a file tree, a timeline, numbers to compare), draw it in a ```diagram fence with Unicode box drawing (╭─╮ │ ╰─╯ ┌┬┐ ├─ └──), arrows (→ ← ↓ ▶ ▼), and ▇ bars for charts (whole ▇ only, a value at the end), at most 100 columns wide. It's shown exactly as written, in a frame. Use Markdown tables for side-by-side comparisons.
+    The user will read your final message on screen (rendered as Markdown), so make it the complete answer, not a summary: headings, file paths and short code excerpts where they help. They love terminal art: wherever a picture explains better than words (architecture, data flow, a pipeline, a state machine, a file tree, a timeline, numbers to compare), draw it in a ```diagram fence with Unicode box drawing (╭─╮ │ ╰─╯ ┌┬┐ ├─ └──), arrows (→ ← ↓ ▶ ▼), and ▇ bars for charts (whole ▇ only, a value at the end), at most 100 columns wide. Make every row of a box exactly as wide as its top border, and the box wide enough for its longest line. It's shown exactly as written, in a frame. Use Markdown tables for side-by-side comparisons.
 
   # Added to the reply the assistant gets after handing over work.
   short_ack: |-
