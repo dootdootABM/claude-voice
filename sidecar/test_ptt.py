@@ -24,7 +24,7 @@ class FakeTts:
         self.hold = asyncio.Event()
         self.speaking = False
         self.stops = 0
-        self.player = types.SimpleNamespace(gain=1.0)
+        self.player = types.SimpleNamespace(gain=1.0, recent_level=lambda window: (0.0, 0.0))
 
     def stop(self):
         self.stops += 1

@@ -24,7 +24,7 @@ behaviour:
   verbosity: "normal"
   # Open the live output window when a task starts.
   auto_show_output: true
-  # Ignore the microphone while it speaks (use this without headphones).
+  # Ignore the microphone while it speaks (if it still interrupts itself on speakers).
   half_duplex: false
 
 # Which Claude models do what (an alias like haiku/sonnet/opus, or a full model id).

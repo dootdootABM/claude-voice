@@ -48,7 +48,8 @@ spoken (or typed) approval. It runs in a terminal as a breathing orb, or as a pl
 
 - [uv](https://docs.astral.sh/uv/) and Python 3.12 or newer.
 - The [`claude` CLI](https://docs.anthropic.com/en/docs/claude-code), logged in to a claude.ai subscription.
-- A microphone and speakers (headphones recommended, see `--half-duplex`).
+- A microphone and speakers or headphones. On speakers cv learns how loud its own voice comes back through the mic and
+  ignores it, so you can still talk over it by speaking up; if it still interrupts itself, use `--half-duplex`.
 - Linux: the [kitty](https://sw.kovidgoyal.net/kitty/) terminal (the output window and prompt editor open in kitty).
 - Optional, for `scripts/cv-window` only: Hyprland (`hyprctl`) and `jq`. It is written to be launched from Rofi.
 

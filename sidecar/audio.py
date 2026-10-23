@@ -236,6 +236,7 @@ class Player:
         self.applied_gain = 1.0  # what the last block ended at; each block ramps from here to `gain`, so ducking doesn't click
         self.idle_since = time.monotonic()  # when it last ran out of audio (for the listening readout)
         self.level = 0.0  # loudness of the last output block, 0..1 (for the UI)
+        self.history = collections.deque(maxlen=50)  # (time, rms) of the last ~1 s of output blocks, for the echo gate
         # Between clips the stream plays a noise floor (~-86 dBFS, inaudible) instead of exact zeros: USB DACs and
         # headphone amps tend to mute on digital silence and take a moment to wake, which clipped the start of replies.
         self.floor = (np.random.default_rng(0).standard_normal(TTS_SR) * 5e-5).astype(np.float32)
@@ -275,7 +276,9 @@ class Player:
         try:
             filled = self._fill(out, frames)
         finally:
-            self.level = min(1.0, float(np.sqrt(np.mean(out ** 2))) * 4)
+            rms = float(np.sqrt(np.mean(out ** 2)))
+            self.level = min(1.0, rms * 4)
+            self.history.append((time.monotonic(), rms))
         if filled < frames:  # nothing (more) to play in this block
             start = self.floor_pos
             out[filled:, 0] = self.floor[start:start + frames - filled]
@@ -302,6 +305,12 @@ class Player:
                     if not self.clips:
                         self.idle_since = time.monotonic()
         return filled
+
+    def recent_level(self, window):
+        """The loudest output block of the last `window` seconds (rms), and the latest one's."""
+        blocks = list(self.history)  # copied in one go: the audio thread appends while this reads
+        since = time.monotonic() - window
+        return max((rms for t, rms in blocks if t >= since), default=0.0), (blocks[-1][1] if blocks else 0.0)
 
     def play(self, clip):
         with self.lock:
@@ -498,6 +507,43 @@ def looks_like_answer(text):
     return bool(words) and len(words) <= 8 and words[-1] not in DANGLING and any(w in ANSWER_WORDS for w in words)
 
 
+class EchoGate:
+    """Tells your voice from the agent's own voice coming back through speakers.
+
+    Without headphones the mic hears the reply, and to the VAD that is speech: the voice ducked at its own words,
+    interrupted itself and sent its own sentences back as yours. The gate learns how loud the echo is compared with
+    what was played (the coupling, ~0 on headphones), and while something is playing a mic frame only counts as
+    speech if it is MARGIN times louder than the echo would be. Talking over it still works; you just need to be
+    clearly louder than the speakers at the mic. Pure numpy, so it works the same on every platform.
+    """
+
+    WINDOW_S = 0.5  # output this recent can still be reaching the mic (device buffers, the room, a listener backlog)
+    FLOOR = 0.003  # output quieter than this (the noise floor, silence) gates nothing and teaches nothing
+    MARGIN = 2.0  # over the loud end of the echo
+    LEARN_MIN = 25  # frames (~0.8 s) of playback before the learned coupling is trusted
+    UNKNOWN = 1.0  # coupling assumed until then: echo as loud as the output, so only a clearly loud voice barges in
+
+    def __init__(self, player):
+        self.player = player
+        self.ratios = collections.deque(maxlen=300)  # mic/output level while playing, the last ~10 s of it
+        self.coupling = self.UNKNOWN
+        self.logged = False
+
+    def is_echo(self, mic_rms):
+        ref, now = self.player.recent_level(self.WINDOW_S)
+        if ref < self.FLOOR:
+            return False
+        if now >= self.FLOOR:  # only while it's playing: after a barge-in stops it, that's you
+            self.ratios.append(mic_rms / ref)
+            if len(self.ratios) >= self.LEARN_MIN:
+                # The 90th percentile is the loud end of the echo; the odd frame of you talking over it is above it.
+                self.coupling = float(np.percentile(self.ratios, 90))
+                if not self.logged:
+                    self.logged = True
+                    cvlog.log.event("echo", f"the mic hears the output at {self.coupling:.3f} of its level")
+        return mic_rms < self.MARGIN * self.coupling * ref
+
+
 class Listener:
     """VAD state machine over mic frames.
 
@@ -546,6 +592,7 @@ class Listener:
         self._ptt_events = collections.deque()  # ("down"|"up", time) in order; the frame loop acts on them
         self._ptt_buf, self._ptt_t_down, self._ptt_started = [], 0.0, False
         self._reset = False
+        self.echo = EchoGate(tts.player)
 
     # ---- push to talk: called from the UI, the control socket or a global hotkey (on the event loop) ----
     def set_mode(self, mode):
@@ -654,6 +701,8 @@ class Listener:
                 continue
             rms = float(np.sqrt(np.mean(frame ** 2)))
             p = self.vad(frame * (self.VAD_LEVEL / rms) if rms > self.VAD_LEVEL else frame)
+            if not self.in_speech and self.echo.is_echo(rms):
+                p = 0.0  # its own voice through the speakers, not you
             if not self.in_speech:
                 # Loud sound that isn't (yet) speech: log it, so a missed "I approve" shows up in the session log.
                 if rms > 0.15:

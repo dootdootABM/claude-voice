@@ -54,7 +54,7 @@ COMMENTS = {
     "behaviour": "How it behaves.",
     "behaviour.verbosity": "How much it says when a task finishes a round: quiet | normal | chatty.",
     "behaviour.auto_show_output": "Open the live output window when a task starts.",
-    "behaviour.half_duplex": "Ignore the microphone while it speaks (use this without headphones).",
+    "behaviour.half_duplex": "Ignore the microphone while it speaks (if it still interrupts itself on speakers).",
     "models": "Which Claude models do what (an alias like haiku/sonnet/opus, or a full model id).",
     "models.front": "The voice assistant you talk to.",
     "models.backend": "Default model for quick tasks.",
