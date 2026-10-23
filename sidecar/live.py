@@ -7,20 +7,34 @@ That keeps working across a cv restart (a restarted task appends to the same fil
 Event schema (version 1). Every event has:  v (1), ts (unix seconds), kind. Events produced inside a subagent also
 carry  parent (the tool_use id of the Agent call that started it) and agent (its type: scout, builder, reviewer).
 
-  round_start    prompt, queued           the request sent to the task; queued=true when it arrived mid-round
+  round_start    prompt, queued, cwd?     the request sent to the task; queued=true when it arrived mid-round
   text           text                     one assistant text block (the claude stream gives whole blocks, not deltas)
   tool_use       id, name, summary,       a tool call. summary is short ("git diff --stat", "sidecar/audio.py");
-                 input?                   input (the full tool input) is only given for Edit, MultiEdit, Write,
-                                          NotebookEdit and TodoWrite, which the viewer draws as diffs / a checklist
+                 input?, subagent_type?   input (the full tool input) is only given for Edit, MultiEdit, Write,
+                                          NotebookEdit and TodoWrite, which the viewer draws as diffs / a checklist;
+                                          subagent_type for an Agent call (scout, builder, reviewer, ...)
   tool_result    tool_use_id, text,       the result of that call. text is the full result up to RESULT_MAX
-                 is_error, truncated      characters
+                 is_error, truncated,     characters. meta (result_meta) is what Claude Code summarises it with:
+                 meta?                    Read {lines, start, total}, Grep/Glob {files, lines}, Edit/Write {patch,
+                                          created}
+  thinking       (none)                   the model thought before this step (its text isn't given)
   permission     tool, summary,           a permission request and its outcome. decision: approved | refused;
-                 decision, by, reason?    by: user | auto | step_checker
-  subagent_start id, name, description,   a worker started (id is Claude Code's task id; parent is the Agent call)
-                 parent
-  subagent_end   id, name, status         it finished (completed, failed, stopped, ...)
-  round_end      duration_s, turns, ok    the round's result
+                 decision, by, reason?    by: user | auto | step_checker | rules (a job rule) | read_only
+  subagent_start id, name, description,   a worker started (id is Claude Code's task id; parent is the Agent call).
+                 parent, brief?           brief: the prompt it was given (jobs)
+  progress       id, step, tokens?,       a running subagent's latest step and totals so far
+                 tool_uses?, ms?
+  subagent_end   id, name, status,        it finished (completed, failed, stopped, ...), with its totals when known
+                 tokens?, tool_uses?, ms?
+  tokens         out                      output tokens of the round so far (for the spinner)
+  job            what, ...                an orchestrator milestone: plan_approved {plan}, piece_done {piece, summary,
+                                          files}, state_saved, hand_on {tokens}, handed_back {reason},
+                                          budget {spent_pct}
+  round_end      duration_s, turns, ok,   the round's result
+                 out_tokens?
   task_closed    (none)                   the task was closed; the live file goes once its window is gone
+
+Fields marked ? and the kinds thinking, progress, tokens and job came later; a viewer draws a log without them.
 
 The <task-id> in the file names is the task's live_key (agents.Task: id plus a per-instance uid), so a new task that
 reuses an id never shares a file or window with an older one.
@@ -51,11 +65,15 @@ KINDS = {
     "permission": ("tool", "decision", "by"),
     "subagent_start": ("id", "name"),
     "subagent_end": ("id", "name", "status"),
+    "thinking": (),
+    "progress": ("id", "step"),
+    "tokens": ("out",),
+    "job": ("what",),
     "round_end": ("duration_s", "turns"),
     "task_closed": (),
 }
 DECISIONS = ("approved", "refused")
-DECIDERS = ("user", "auto", "step_checker")
+DECIDERS = ("user", "auto", "step_checker", "rules", "read_only")
 
 
 # ---- schema ------------------------------------------------------------------------------------------------------
@@ -83,6 +101,9 @@ def problems(ev):
 def summarize(name, inp, limit=200):
     """A short Claude-Code-style description of a tool call's input: the command, the file, the pattern."""
     inp = inp if isinstance(inp, dict) else {}
+    if name in ("Grep", "Glob") and inp.get("pattern"):  # Search(pattern: "x", path: "y"), as Claude Code shows it
+        text = f'pattern: "{inp["pattern"]}"' + (f', path: "{inp["path"]}"' if inp.get("path") else "")
+        return " ".join(text.split())[:limit]
     for key in ("command", "file_path", "notebook_path", "pattern", "url", "query", "description", "prompt"):
         if inp.get(key):
             text = str(inp[key])
@@ -90,6 +111,37 @@ def summarize(name, inp, limit=200):
     else:
         text = json.dumps(inp, ensure_ascii=False) if inp else ""
     return " ".join(text.split())[:limit]
+
+
+PATCH_LINES = 200  # lines of a structuredPatch kept in a tool_result's meta
+
+
+def result_meta(name, r):
+    """The parts of Claude Code's tool_use_result its own transcript summarises a result with, or None."""
+    if not isinstance(r, dict):
+        return None
+    if name == "Read" and isinstance(r.get("file"), dict):
+        f = r["file"]
+        meta = {"lines": f.get("numLines"), "start": f.get("startLine"), "total": f.get("totalLines")}
+    elif name in ("Grep", "Glob"):
+        meta = {"files": r.get("numFiles"), "lines": r.get("numLines")}
+    elif name in ("Edit", "MultiEdit", "Write") and isinstance(r.get("structuredPatch"), list):
+        hunks, left = [], PATCH_LINES
+        for h in r["structuredPatch"]:
+            if left <= 0 or not isinstance(h, dict):
+                break
+            lines = [str(x) for x in h.get("lines") or []][:left]
+            left -= len(lines)
+            hunks.append({"old": h.get("oldStart"), "new": h.get("newStart"), "lines": lines})
+        meta = {"patch": hunks, "created": True if r.get("type") == "create" else None}
+        if r.get("type") == "create" and not hunks and isinstance(r.get("content"), str):  # a new file has no hunks
+            lines = r["content"].splitlines()
+            meta["patch"] = [{"old": 0, "new": 1, "lines": ["+" + x for x in lines[:PATCH_LINES]]}]
+            meta["added"] = len(lines)
+    else:
+        return None
+    meta = {k: v for k, v in meta.items() if v is not None}
+    return meta or None
 
 
 # ---- files -------------------------------------------------------------------------------------------------------

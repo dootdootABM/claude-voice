@@ -26,9 +26,13 @@ spoken (or typed) approval. It runs in a terminal as a breathing orb, or as a pl
   (read-only commands and test runs skip it). To keep usage down, scouts run on `models.scout` (haiku by default),
   workers report in at most 15 lines, and once a piece is done in a conversation that has grown long, the job carries
   on in a fresh orchestrator from its saved state.
-- **Live output window.** Each task gets one window of its own that follows its work as it happens, much like a
-  Claude Code chat: the request, the assistant's text (Markdown, tables, diagrams), every tool call with a short
-  result preview, edits as coloured diffs, todo lists, permission decisions and each subagent's steps nested under it.
+- **Live output window.** Each task gets one window of its own that follows its work as it happens, drawn like a
+  Claude Code terminal in your wallpaper colours: `● Tool(args)` lines with `⎿` results (`Read 48 lines`,
+  `Found 5 files`, command output), numbered diffs, todo lists, `✻ Thinking…`, the spinner with time and tokens, and
+  the assistant's text with cv's Markdown, tables and diagrams. Subagents show their last few steps while they run and
+  `Done (10 tool uses · 36.8k tokens · 48.4s)` when they finish. For a job you can watch the orchestrator work: each
+  worker (scout, builder, reviewer) with the plan check's verdict on its steps, the job rules' refusals, the plan,
+  each piece marked done and the hand-over to a fresh orchestrator, plus a panel of the workers still running.
   It opens when a task starts (`behaviour.auto_show_output`) and again when you ask; asking twice never opens a
   second window.
 - Every `claude` process is started without `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and the
@@ -147,7 +151,8 @@ F9 Up::Run('C:\path\to\claude-voice\scripts\cv.cmd ptt up', , 'Hide')
 
 Output window keys: arrows or `j`/`k` scroll, `h`/`l` sideways, `space`/`b` page, `g`/`G` top/end, `]`/`[` section,
 `t` contents, `y` copy, `q` close. In the live window: `e` expands or collapses the result or subagent under the
-cursor, `f` turns following new output on and off, scrolling up stops following and `G` (or `End`) resumes it.
+cursor, `Enter` opens the worker under the cursor on its own (its brief, every step, its report; `Esc` goes back),
+`f` turns following new output on and off, scrolling up stops following and `G` (or `End`) resumes it.
 
 ## Windows (experimental, untested on real hardware)
 

@@ -37,6 +37,8 @@ RESTART_FILE = os.path.join(STATE_DIR, "restart.json")  # a restart a task asked
 RESTART_EXIT = 75  # exit code meaning "restart me" to scripts/cv
 OUTPUT_DIR = os.path.join(STATE_DIR, "outputs")  # each round's full result, as Markdown, for the output window
 KEEP_OUTPUTS = 50
+TOKENS_STEP = 100  # the live log's running token count is written when it has grown by this much
+BRIEF_MAX = 4000  # characters of a subagent's prompt kept in the live log
 QUIET_TOOLS = {"Read", "Glob", "Grep", "LS", "ToolSearch", "TodoWrite", "NotebookRead"}  # no permission line when allowed
 _decided_by = contextvars.ContextVar("decided_by", default=None)  # {"by": ...} of the permission request being answered
 
@@ -45,11 +47,12 @@ def log_round(task, text, queued=False):
     """A message went to the task's session: log it as the start of a round (queued: it arrives mid-round)."""
     if not queued:
         task.round_t0 = time.monotonic()
-    live.emit(task.live_key, "round_start", prompt=text, queued=True if queued else None)
+    live.emit(task.live_key, "round_start", prompt=text, queued=True if queued else None,
+              cwd=getattr(task, "project_dir", None))
 
 
 def decided_by(who):
-    """Record who is deciding the permission request being answered: user | auto | step_checker."""
+    """Record who is deciding the permission request being answered: user | auto | step_checker | rules | read_only."""
     box = _decided_by.get()
     if box is not None:
         box["by"] = who
@@ -1374,7 +1377,9 @@ class Backend:
 
     # ---- the task's live log (live.py): never raises into the task ------------------------------------------------
     def _live(self, kind, **fields):
-        live.emit(self.task.live_key, kind, **fields)
+        key = getattr(self.task, "live_key", None)
+        if key:
+            live.emit(key, kind, **fields)
 
     async def send_user(self, text, queued=False):
         """Send a message to the session, and log it as the start of a round (queued: it arrives mid-round)."""
@@ -1389,20 +1394,40 @@ class Backend:
         return {"parent": parent, "agent": self.__dict__.setdefault("agent_names", {}).get(parent)}
 
     def _live_event(self, ev):
-        """Log what a stream event shows: text, tool calls and results, subagents starting and ending."""
+        """Log what a stream event shows: text, thinking, tool calls and results, subagents starting, progressing and
+        ending, and the round's output tokens."""
         t = ev.get("type")
-        names = self.__dict__.setdefault("agent_names", {})  # Agent tool_use id → subagent type
+        d = self.__dict__
+        names = d.setdefault("agent_names", {})  # Agent tool_use id → subagent type
+        tool_names = d.setdefault("tool_names", {})  # tool_use id → tool name (for the result's meta)
         if t == "assistant":
             nest = self._nested(ev)
-            for b in ev["message"]["content"]:
+            msg = ev.get("message") or {}
+            content = msg.get("content") or []
+            thought = d.setdefault("thought", set())  # message ids whose thinking is logged (blocks come one by one)
+            if any(b.get("type") == "thinking" for b in content) and (msg.get("id") or id(msg)) not in thought:
+                thought.add(msg.get("id") or id(msg))
+                self._live("thinking", **nest)
+            for b in content:
                 if b.get("type") == "text" and b.get("text", "").strip():
                     self._live("text", text=b["text"], **nest)
                 elif b.get("type") == "tool_use":
                     inp = b.get("input") or {}
+                    tool_names[b.get("id")] = b.get("name")
                     if b.get("name") in ("Agent", "Task"):
                         names[b["id"]] = inp.get("subagent_type") or "agent"
                     self._live("tool_use", id=b.get("id"), name=b.get("name"), summary=live.summarize(b.get("name"), inp),
-                               input=inp if b.get("name") in live.FULL_INPUT_TOOLS else None, **nest)
+                               input=inp if b.get("name") in live.FULL_INPUT_TOOLS else None,
+                               subagent_type=names.get(b.get("id")), **nest)
+            if not nest:  # the round's output tokens (a message repeats with growing usage: keep its highest)
+                per = d.setdefault("out_tokens", {})
+                out = (msg.get("usage") or {}).get("output_tokens")
+                if isinstance(out, int) and out > per.get(msg.get("id"), 0):
+                    per[msg.get("id")] = out
+                    total = sum(per.values())
+                    if total - d.get("out_logged", 0) >= TOKENS_STEP:
+                        d["out_logged"] = total
+                        self._live("tokens", out=total)
         elif t == "user":
             content = ev.get("message", {}).get("content")
             for b in content if isinstance(content, list) else []:
@@ -1411,21 +1436,44 @@ class Backend:
                     if isinstance(body, list):
                         body = "\n".join(x.get("text", "") for x in body if isinstance(x, dict))
                     body = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False, default=str)
+                    meta = live.result_meta(tool_names.get(b.get("tool_use_id")), ev.get("tool_use_result"))
                     self._live("tool_result", tool_use_id=b.get("tool_use_id"), text=body[:live.RESULT_MAX],
                                is_error=bool(b.get("is_error")), truncated=True if len(body) > live.RESULT_MAX else None,
-                               **self._nested(ev))
+                               meta=meta, **self._nested(ev))
         elif t == "system" and ev.get("subtype") == "task_started":
             use = ev.get("tool_use_id")
             name = ev.get("subagent_type") or names.get(use) or "agent"
             names[use] = name
-            self.__dict__.setdefault("agent_uses", {})[ev.get("task_id")] = (use, name)
-            self._live("subagent_start", id=ev.get("task_id"), name=name, description=ev.get("description"), parent=use)
+            d.setdefault("agent_uses", {})[ev.get("task_id")] = (use, name)
+            brief = ev.get("prompt")
+            self._live("subagent_start", id=ev.get("task_id"), name=name, description=ev.get("description"), parent=use,
+                       brief=brief[:BRIEF_MAX] if isinstance(brief, str) else None)
+        elif t == "system" and ev.get("subtype") == "task_progress":
+            use, _ = d.get("agent_uses", {}).get(ev.get("task_id"), (None, None))
+            if use is not None:
+                u = ev.get("usage") or {}
+                self._live("progress", id=ev.get("task_id"), parent=use,
+                           step=str(ev.get("description") or ev.get("last_tool_name") or ""),
+                           tokens=u.get("total_tokens"), tool_uses=u.get("tool_uses"), ms=u.get("duration_ms"))
         elif t == "system" and ev.get("subtype") in ("task_updated", "task_notification"):
             status = (ev.get("patch") or {}).get("status") or ev.get("status")
             if status in ("completed", "failed", "stopped", "killed", "error"):
-                use, name = self.__dict__.setdefault("agent_uses", {}).pop(ev.get("task_id"), (None, "agent"))
+                u = ev.get("usage") or {}
+                ends = d.setdefault("agent_ends", {})  # task_id → its end was logged without totals
+                if ev.get("task_id") in ends:  # the totals came after the end: log the end again with them
+                    if u:
+                        use, name = ends.pop(ev["task_id"])
+                        self._live("subagent_end", id=ev.get("task_id"), name=name, status=status, parent=use,
+                                   tokens=u.get("total_tokens"), tool_uses=u.get("tool_uses"), ms=u.get("duration_ms"))
+                    return
+                use, name = d.setdefault("agent_uses", {}).pop(ev.get("task_id"), (None, "agent"))
                 if use is not None:
-                    self._live("subagent_end", id=ev.get("task_id"), name=name, status=status, parent=use)
+                    self._live("subagent_end", id=ev.get("task_id"), name=name, status=status, parent=use,
+                               tokens=u.get("total_tokens"), tool_uses=u.get("tool_uses"), ms=u.get("duration_ms"))
+                    if not u:
+                        ends[ev.get("task_id")] = (use, name)
+        elif t == "result":
+            d["out_tokens"], d["out_logged"], d["thought"] = {}, 0, set()
 
     async def _permission_logged(self, name, inp, req):
         """The permission handler claude is given: _permission, plus a line in the live log with who decided."""
@@ -1643,7 +1691,8 @@ class Backend:
             ok = res.get("subtype") == "success"
             t0 = getattr(t, "round_t0", None)
             self._live("round_end", duration_s=round(res["duration_ms"] / 1000, 1) if res.get("duration_ms")
-                       else round(time.monotonic() - t0, 1) if t0 else 0, turns=res.get("num_turns") or 0, ok=ok)
+                       else round(time.monotonic() - t0, 1) if t0 else 0, turns=res.get("num_turns") or 0, ok=ok,
+                       out_tokens=(res.get("usage") or {}).get("output_tokens"))
             t.round_t0 = None
             if self.app.restart_requested:
                 return  # the app is going down; this session gets resumed after the restart

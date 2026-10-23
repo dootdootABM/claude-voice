@@ -453,3 +453,52 @@ def test_round_report_is_haikus_summary(state, verbosity):
     asyncio.run(run())
     assert agents.SUMMARY[verbosity] in notes[0]  # (notes[1] is the session ending, from the None above)
     assert "already heard" not in notes[0]
+
+
+def test_claude_code_details_are_logged(state):
+    """The extra data the window draws like Claude Code: thinking, result meta, progress, totals, tokens, the brief."""
+    b = backend(state)
+    msg = lambda mid, out, content, **k: {"type": "assistant", **k, "message": {"id": mid, "content": content,
+                                                                                "usage": {"output_tokens": out}}}
+    b._live_event(msg("m1", 60, [{"type": "thinking", "thinking": "", "signature": "x"},
+                                 {"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": "/p/a.py"}}]))
+    b._live_event(msg("m1", 150, [{"type": "thinking", "thinking": ""}]))  # the same message, more tokens
+    b._live_event({"type": "user", "tool_use_result": {"file": {"numLines": 48, "startLine": 1, "totalLines": 48}},
+                   "message": {"content": [{"type": "tool_result", "tool_use_id": "r1", "content": "x"}]}})
+    b._live_event(msg("m2", 10, [{"type": "tool_use", "id": "a1", "name": "Agent",
+                                  "input": {"subagent_type": "builder", "description": "d", "prompt": "the brief"}}]))
+    b._live_event({"type": "system", "subtype": "task_started", "task_id": "w1", "tool_use_id": "a1",
+                   "subagent_type": "builder", "description": "d", "prompt": "the brief"})
+    b._live_event({"type": "system", "subtype": "task_progress", "task_id": "w1", "description": "Editing a.py",
+                   "usage": {"total_tokens": 5642, "tool_uses": 1, "duration_ms": 3760}})
+    b._live_event({"type": "system", "subtype": "task_updated", "task_id": "w1", "patch": {"status": "completed"}})
+    b._live_event({"type": "system", "subtype": "task_notification", "task_id": "w1", "status": "completed",
+                   "usage": {"total_tokens": 36777, "tool_uses": 10, "duration_ms": 48422}})
+    evs = live.read_all("t1")
+    assert all(live.problems(e) == [] for e in evs), [live.problems(e) for e in evs]
+    kinds = [e["kind"] for e in evs]
+    assert kinds == ["thinking", "tool_use", "tokens", "tool_result", "tool_use", "subagent_start", "progress",
+                     "subagent_end", "subagent_end"]
+    assert evs[2]["out"] == 150  # one message, counted once at its highest
+    assert evs[3]["meta"] == {"lines": 48, "start": 1, "total": 48}
+    assert evs[4]["subagent_type"] == "builder" and evs[5]["brief"] == "the brief"
+    assert (evs[6]["step"], evs[6]["tokens"], evs[6]["parent"]) == ("Editing a.py", 5642, "a1")
+    assert "tokens" not in evs[7] and (evs[8]["tokens"], evs[8]["tool_uses"], evs[8]["ms"]) == (36777, 10, 48422)
+
+
+def test_job_milestones_and_deciders_are_logged(state):
+    b = backend(state)
+    b.task.budget, b.task.budget_warned = 10.0, False
+    b.proc_cost = 9.0
+    asyncio.run(b._save_state({"markdown": "state"}))
+    b.budget_note()
+    asyncio.run(b._hand_back({"reason": "one file"}))
+    box = {"by": "auto"}
+    agents._decided_by.set(box)
+    b._deny("second builder", "wait")
+    evs = live.read_all("t1")
+    assert [(e["what"], e.get("spent_pct"), e.get("reason")) for e in evs] == [
+        ("state_saved", None, None), ("budget", 90, None), ("handed_back", None, "one file")]
+    assert box["by"] == "rules"
+    b._deny("checker refused", "no", by="step_checker")
+    assert box["by"] == "step_checker"

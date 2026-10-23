@@ -224,6 +224,7 @@ class JobBackend(Backend):
         with open(self._path("state.md"), "w", encoding="utf-8") as f:
             f.write(text.strip() + "\n")
         self.task.digest.append("state saved")
+        self._live("job", what="state_saved")
         return "Saved."
 
     async def _mark_done(self, args):
@@ -245,6 +246,7 @@ class JobBackend(Backend):
         with open(self._path("done.json"), "w", encoding="utf-8") as f:
             json.dump(done, f, indent=1)
         self.task.digest.append(f"done: {args.get('piece', '')}")
+        self._live("job", what="piece_done", piece=args.get("piece", ""), summary=args.get("summary", ""), files=files)
         self.app.ui.status(f"{self.task.id}: done — {args.get('piece', '')} ({len(files)} files)")
         if self.task.context >= FRESH_AFTER:
             self.hand_on = True
@@ -255,6 +257,7 @@ class JobBackend(Backend):
 
     async def _hand_back(self, args):
         self.task.handed_back = args.get("reason", "")
+        self._live("job", what="handed_back", reason=self.task.handed_back)
         self.app.ui.status(f"{self.task.id}: handed back as a quick task ({self.task.handed_back})")
         return "Handed back. End your turn now with one short line; don't do anything else."
 
@@ -324,6 +327,7 @@ class JobBackend(Backend):
         if why := risk(name, inp, t.project_dir):  # hard to undo: always the user's call, as before
             return await self._ask_step(inp, verb, target, body, why)
         if name == "Bash" and read_only(inp.get("command", "")):
+            decided_by("read_only")
             self.app.ui.dim(f"  {t.id} │ ✓ read-only: {w.kind} {verb} {target}")
             return self._allow(inp)
         ok, reason = await self._check(w, name, inp, verb, target)
@@ -332,7 +336,7 @@ class JobBackend(Backend):
         decided_by("step_checker")
         if not ok:
             return self._deny(f"checker refused {w.kind}: {verb} {target} — {reason}",
-                              f"Step refused by the plan check: {reason}")
+                              f"Step refused by the plan check: {reason}", by="step_checker")
         if name in WRITE_TOOLS:
             w.files.add(os.path.relpath(inp.get("file_path") or inp.get("notebook_path") or "", t.project_dir))
         elif name in SHELL_TOOLS:
@@ -348,6 +352,7 @@ class JobBackend(Backend):
         resp = await super()._permission(name, inp, req)
         if resp.get("behavior") == "allow":
             t.plan = inp.get("plan", "")
+            self._live("job", what="plan_approved", plan=t.plan)
             with open(self._path("plan.md"), "w", encoding="utf-8") as f:
                 f.write(t.plan + "\n")
         return resp
@@ -363,7 +368,8 @@ class JobBackend(Backend):
     async def start(self, message=None):
         await super().start(message or self.opening(self.task.prompt))
 
-    def _deny(self, what, message):
+    def _deny(self, what, message, by="rules"):
+        decided_by(by)
         cvlog.log.event(f"job-{self.task.id}:deny", what)
         self.app.ui.dim(f"  {self.task.id} │ ✗ {what}")
         return {"behavior": "deny", "message": message}
@@ -429,6 +435,7 @@ class JobBackend(Backend):
         was = t.context
         await self.close()
         t.session_id, t.context, t.nudged = None, 0, 0
+        self._live("job", what="hand_on", tokens=was)
         t.backend = self.app.backend_for(t, carry_on=True)
         t.state = "building"
         await t.backend.start(t.backend.opening(
@@ -441,6 +448,7 @@ class JobBackend(Backend):
         t = self.task
         if not t.budget_warned and self.spent >= BUDGET_WARN * t.budget:
             t.budget_warned = True
+            self._live("job", what="budget", spent_pct=round(100 * self.spent / t.budget))
             return (f"[Job {t.id} has used {self.spent / t.budget:.0%} of its usage cap.] Tell the user in one "
                     "sentence and ask whether to keep going; if they say yes, raise the cap with continue_task "
                     "(budget_usd, e.g. double it). It's subscription usage, not money: never mention dollars.")
