@@ -55,6 +55,8 @@ spoken (or typed) approval. It runs in a terminal as a breathing orb, or as a pl
 - A microphone and speakers or headphones. On speakers cv learns how loud its own voice comes back through the mic and
   ignores it, so you can still talk over it by speaking up; if it still interrupts itself, use `--half-duplex`.
 - Linux: the [kitty](https://sw.kovidgoyal.net/kitty/) terminal (the output window and prompt editor open in kitty).
+- Windows: [Windows Terminal](https://aka.ms/terminal) (the output window and prompt editor open in it; kitty doesn't
+  run natively on Windows). See [Windows](#windows-experimental-untested-on-real-hardware).
 - Optional, for `scripts/cv-window` only: Hyprland (`hyprctl`) and `jq`. It is written to be launched from Rofi.
 
 ## Setup
@@ -159,19 +161,28 @@ cursor, `Enter` opens the worker under the cursor on its own (its brief, every s
 Windows 10/11 support was written and tested only on Linux plus CI runners. It has never been run on a real Windows
 machine with a microphone, so expect rough edges.
 
-1. Install [uv](https://docs.astral.sh/uv/), the `claude` CLI, and Windows Terminal (recommended).
+1. Install [uv](https://docs.astral.sh/uv/), the `claude` CLI, and [Windows Terminal](https://aka.ms/terminal), the
+   Windows counterpart of kitty (`winget install Microsoft.WindowsTerminal` if `wt` isn't found; some Windows 11
+   editions don't ship it). Start cv from it.
 2. From `sidecar\`, run `uv sync --extra gpu` (NVIDIA) or `uv sync --extra cpu`. With pip, use
    `requirements-gpu.txt` or `requirements-cpu.txt` as above.
-3. Run `scripts\get-models.cmd` (or `scripts\get-models.cmd --cpu`) to fetch the Kokoro model files.
+3. Run `scripts\get-models.cmd` (or `scripts\get-models.cmd --cpu`). Besides the Kokoro files, on Windows it also
+   fetches the Whisper models (about 2 GB; only `small.en` with `--cpu`) into the Hugging Face cache, so the first
+   launch doesn't sit at "waking up" while they download. Run it after `uv sync`: that part runs in the uv environment.
+   `--no-whisper` skips it.
 4. Launch from a terminal: `scripts\cv.cmd` (cmd.exe) or `scripts\cv.ps1` (PowerShell). Arguments pass through, e.g.
    `scripts\cv.cmd --plain --device cpu`.
+5. Optional: run `scripts\install-cv.cmd` once to type just `cv` in any terminal, as on Linux. It writes a small
+   `cv.cmd` into `%USERPROFILE%\.local\bin` (where uv installs itself) that runs this copy's `scripts\cv.cmd`, and adds
+   that folder to your user PATH if needed; open a new terminal afterwards. `scripts\install-cv.cmd --remove` undoes it.
 
 PowerShell blocks unsigned scripts by default. Either run
 `powershell -ExecutionPolicy Bypass -File scripts\cv.ps1`, or allow local scripts once with
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. `cv.cmd` has no such restriction.
 
 State (logs, tasks, outputs) goes to `%LOCALAPPDATA%\claude-voice` unless `CLAUDE_VOICE_STATE_DIR` is set. Extra windows
-open in Windows Terminal (`wt.exe`) when it is on `PATH`, otherwise a new console; the clipboard uses `pyperclip`.
+open in Windows Terminal (`wt.exe`) when it is on `PATH`. Without it they fall back to a plain console window, which
+Windows tends to open behind the current one, and `o` doesn't raise it. The clipboard uses `pyperclip`.
 
 **Permission rules are weaker on Windows.** Spoken approval is required for risky commands, and the checks know the
 Windows shells (`PowerShell` tool, `del`, `erase`, `rd /s`, `rmdir`, `Remove-Item`, `ri`, and sensitive locations such
