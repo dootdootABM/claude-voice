@@ -51,6 +51,8 @@ FRESH_AFTER = 40_000  # tokens: past this, a finished piece hands the job on to 
 READ_TOOLS = {"Read", "Grep", "Glob", "LS", "WebSearch", "WebFetch", "TodoWrite", "ToolSearch", "NotebookRead"}
 WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 
+SCRATCH = (" Put any scratch files (sample inputs, test data) in a folder of your own under the system temp folder "
+           "(mktemp -d), never in the project, and delete it when you're done.")
 REPORT = ("End with this report and nothing after it, at most 15 lines: the orchestrator keeps it for the rest of "
           "the job, so give paths and line numbers, not pasted code, diffs or logs.\n"
           "Status: done | blocked | failed\nChanged: files, one line each (or none)\nFound: what matters for the next "
@@ -68,7 +70,7 @@ AGENTS = {
         "prompt": "You make exactly the change your brief describes, nothing more: no unrelated fixes, no refactors "
                   "it didn't ask for, nothing from the done list again. Read before you edit. Run the checks the "
                   "brief names. Every edit and command is checked against your brief before it runs; if one is "
-                  "refused, follow the reason given. " + REPORT,
+                  "refused, follow the reason given." + SCRATCH + " " + REPORT,
         "tools": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
     },
     "reviewer": {
@@ -77,7 +79,7 @@ AGENTS = {
         "prompt": "You verify one piece of work against its brief. Read the diff (git diff) and the code around it, "
                   "run the tests or checks that apply, and look for anything missing, wrong, or done twice. Don't "
                   "fix anything. Status: done only if the piece is complete and correct; otherwise failed, with "
-                  "exactly what's wrong. " + REPORT,
+                  "exactly what's wrong." + SCRATCH + " " + REPORT,
         "tools": ["Read", "Grep", "Glob", "Bash"],
     },
 }
