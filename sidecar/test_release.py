@@ -78,6 +78,7 @@ def models(monkeypatch, tmp_path):
     monkeypatch.setattr(get_models, "FILES", files)
     monkeypatch.setattr(get_models, "CPU_FILES", ("a.int8.onnx", "voices.bin"))
     monkeypatch.setattr(get_models, "MODELS", str(tmp_path / "models"))
+    monkeypatch.setattr(get_models, "fetch_whisper", lambda names, out=None: True)  # no Hugging Face downloads
     return tmp_path, files
 
 
@@ -105,3 +106,58 @@ def test_download_checks_the_size(models, monkeypatch):
     bodies["a.int8.onnx"] = b"123"
     assert get_models.main([], io.StringIO()) == 0
     assert sorted(os.listdir(get_models.MODELS)) == ["a.int8.onnx", "a.onnx", "voices.bin"]
+
+
+def test_linux_leaves_whisper_to_first_run(models, monkeypatch):
+    tmp, files = models
+    src = tmp / "other"
+    src.mkdir()
+    for name, size in files.items():
+        (src / name).write_bytes(b"x" * size)
+    monkeypatch.setattr(get_models, "WHISPER_UP_FRONT", False)
+    asked = []
+    monkeypatch.setattr(get_models, "fetch_whisper", lambda names, out=None: asked.append(names) or True)
+    assert get_models.main(["--from", str(src)], io.StringIO()) == 0
+    assert get_models.main(["--cpu"], io.StringIO()) == 0
+    assert get_models.main([], io.StringIO()) == 0
+    assert asked == []
+
+
+def test_whisper_models_follow_the_flags(models, monkeypatch):
+    tmp, files = models
+    src = tmp / "other"
+    src.mkdir()
+    for name, size in files.items():
+        (src / name).write_bytes(b"x" * size)
+    monkeypatch.setattr(get_models, "WHISPER_UP_FRONT", True)  # Windows
+    asked = []
+    monkeypatch.setattr(get_models, "fetch_whisper", lambda names, out=None: asked.append(names) or True)
+    assert get_models.main(["--from", str(src)], io.StringIO()) == 0  # all three Kokoro files there: no downloads
+    assert get_models.main(["--cpu"], io.StringIO()) == 0
+    assert get_models.main([], io.StringIO()) == 0
+    assert get_models.main(["--no-whisper"], io.StringIO()) == 0
+    assert asked == [("small.en",), ("distil-large-v3", "small.en")]  # --from and --no-whisper: none
+
+    out = io.StringIO()  # huggingface_hub not installed for this Python: a note, not a failure
+    monkeypatch.setattr(get_models, "fetch_whisper", lambda names, out=None: False)
+    assert get_models.main([], out) == 0 and "uv sync" in out.getvalue()
+
+    def fail(names, out=None):
+        raise OSError("network down")
+    monkeypatch.setattr(get_models, "fetch_whisper", fail)
+    assert get_models.main([], io.StringIO()) == 1
+
+
+def test_fetch_whisper_asks_for_what_faster_whisper_loads(monkeypatch):
+    import sys
+    import types
+    got = []
+    hub = types.ModuleType("huggingface_hub")
+    hub.snapshot_download = lambda repo, allow_patterns: got.append((repo, allow_patterns))
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+    assert get_models.fetch_whisper(("small.en",), io.StringIO())
+    assert got == [("Systran/faster-whisper-small.en", get_models.WHISPER_FILES)]
+    assert os.environ["HF_HUB_DISABLE_XET"] == "1"
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)  # not installed
+    assert get_models.fetch_whisper(("small.en",), io.StringIO()) is False

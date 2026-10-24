@@ -4,8 +4,13 @@
   python get_models.py --cpu        only what a machine without CUDA needs (int8 and the voices)
   python get_models.py --from DIR   take them from another copy's models folder (hard link, else copy), no download
 
-Files already there with the right size are skipped. The Whisper models need no step: faster-whisper fetches them on
-first run.
+Files already there with the right size are skipped. On Linux the Whisper models need no step: faster-whisper fetches
+them on first run.
+
+Windows also fetches the Whisper models (distil-large-v3 and small.en; small.en only with --cpu) into the Hugging Face
+cache, so the first launch doesn't sit at "waking up" while ~2 GB downloads with no progress shown (and there the hf-xet
+transfer was seen to stall for good). That part needs huggingface_hub from the uv environment, which
+scripts\\get-models.cmd runs it in; without it, it's skipped with a note. --no-whisper skips it; --from leaves it alone.
 """
 
 import argparse
@@ -23,6 +28,14 @@ FILES = {  # name → size in bytes, to tell a complete file from a broken downl
     "voices-v1.0.bin": 28214398,
 }
 CPU_FILES = ("kokoro-v1.0.int8.onnx", "voices-v1.0.bin")
+WHISPER = {  # name → Hugging Face repo, as faster_whisper.utils._MODELS maps them (engine.py picks the names)
+    "distil-large-v3": "Systran/faster-distil-whisper-large-v3",
+    "small.en": "Systran/faster-whisper-small.en",
+}
+CPU_WHISPER = ("small.en",)
+WHISPER_UP_FRONT = os.name == "nt"  # Windows only; Linux leaves them to faster-whisper on first run
+WHISPER_FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]  # as
+# faster_whisper.utils.download_model asks for, so WhisperModel finds them in the cache and downloads nothing
 
 
 def complete(path, size):
@@ -59,10 +72,25 @@ def take(name, size, src):
         shutil.copyfile(from_path, dest)
 
 
+def fetch_whisper(names, out=sys.stdout):
+    """Download the Whisper models into the Hugging Face cache. → False if huggingface_hub isn't installed here."""
+    # hf-xet transfers were seen to stall for good partway through model.bin; plain HTTP doesn't
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return False
+    for name in names:
+        print(f"  whisper {name}: fetching (or checking) {WHISPER[name]}", file=out, flush=True)
+        snapshot_download(WHISPER[name], allow_patterns=WHISPER_FILES)
+    return True
+
+
 def main(argv=None, out=sys.stdout):
     ap = argparse.ArgumentParser(prog="get-models", description="Fetch the Kokoro model files into sidecar/models/.")
     ap.add_argument("--cpu", action="store_true", help="only the files a machine without CUDA needs")
     ap.add_argument("--from", dest="src", metavar="DIR", help="take them from another models folder instead")
+    ap.add_argument("--no-whisper", action="store_true", help="Windows: skip the Whisper speech-to-text models")
     args = ap.parse_args(argv)
     os.makedirs(MODELS, exist_ok=True)
     names = CPU_FILES if args.cpu else tuple(FILES)
@@ -80,6 +108,15 @@ def main(argv=None, out=sys.stdout):
             print(f"get-models: {e}", file=sys.stderr)
             return 1
     print(f"Models are in {MODELS}", file=out)
+    if not WHISPER_UP_FRONT or args.src or args.no_whisper:
+        return 0
+    try:
+        if not fetch_whisper(CPU_WHISPER if args.cpu else tuple(WHISPER), out):
+            print("  whisper: skipped, huggingface_hub isn't installed for this Python. Run `uv sync` in sidecar/ and "
+                  "get-models again, or let cv fetch them on first run.", file=out)
+    except Exception as e:  # noqa: BLE001 - network or hub errors: the Kokoro part is done, say what failed
+        print(f"get-models: the Whisper models didn't download ({e}); run it again", file=sys.stderr)
+        return 1
     return 0
 
 
