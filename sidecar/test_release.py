@@ -67,7 +67,7 @@ def test_nothing_from_the_real_config():
 def test_fixtures_and_scripts_are_tracked():
     names = {n for n, _ in tracked()}
     for need in ("sidecar/testdata/live_sample.jsonl", "scripts/get-models", "scripts/get-models.cmd",
-                 "scripts/try-fresh", "scripts/try-fresh.cmd", "config.example.yaml"):
+                 "scripts/try-fresh", "scripts/try-fresh.cmd", "scripts/install-cv.cmd", "config.example.yaml"):
         assert need in names, f"{need} is not tracked by git"
 
 
