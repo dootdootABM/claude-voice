@@ -30,7 +30,11 @@ git clone https://github.com/dootdootABM/claude-voice.git ~/src/claude-voice
 cd ~/src/claude-voice/sidecar
 uv sync --extra gpu     # or: uv sync --extra cpu
 ../scripts/get-models   # or: ../scripts/get-models --cpu
+mkdir -p ~/.local/bin && ln -sf ~/src/claude-voice/scripts/cv ~/.local/bin/cv
 ```
+
+The last line lets you type `cv` in any terminal. If `~/.local/bin` isn't on your PATH yet, add
+`export PATH="$HOME/.local/bin:$PATH"` to your `~/.bashrc` (or your shell's rc file) and open a new terminal.
 
 ### Windows
 
@@ -48,7 +52,7 @@ On Windows, `get-models.cmd` also downloads the Whisper models (about 2 GB), so 
 ## Usage
 
 ```sh
-cv                  # orb UI (Linux: scripts/cv)
+cv                  # orb UI
 cv --plain          # plain text UI
 cv --help           # all options
 cv --list-voices
