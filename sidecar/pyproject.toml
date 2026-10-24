@@ -24,13 +24,20 @@ hotkey = ["pynput"]                                        # Windows, macOS, Lin
 hotkey-wayland = ["evdev; sys_platform == 'linux'"]        # Linux/Wayland: reads /dev/input, needs the 'input' group
 gpu = [
     "nvidia-cublas-cu12>=12.9.2.10; sys_platform == 'linux' or sys_platform == 'win32'",
-    "nvidia-cudnn-cu12>=9,<10; sys_platform == 'linux' or sys_platform == 'win32'",
+    # Not on Windows: there nvidia-cudnn-cu12 and onnxruntime-gpu's nvidia-cudnn-cu13 unpack into the same
+    # nvidia\cudnn\bin, the CUDA 12 build can win, and Kokoro's first Conv then fails (CUDNN_FE HEURISTIC_QUERY_FAILED)
+    # and drops to CPU. ctranslate2 runs fine on the CUDA 13 cuDNN.
+    "nvidia-cudnn-cu12>=9,<10; sys_platform == 'linux'",
     "onnxruntime-gpu[cuda,cudnn]>=1.31.0; sys_platform == 'linux' or sys_platform == 'win32'",
 ]
 
 [tool.uv]
 conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]
 override-dependencies = ["onnxruntime; extra == 'cpu'"]
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
 
 [dependency-groups]
 dev = ["pytest>=8"]
