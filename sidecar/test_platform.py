@@ -120,6 +120,9 @@ def test_terminal_windows():
             args, kw = popen.call_args
             check("windows wt argv", args[0] == ["wt.exe", "-w", "new", "--title", "cv · t1", "py", "f.py"], args[0])
             check("windows wt detached", kw["creationflags"] == pu.DETACHED_PROCESS | pu.CREATE_NEW_PROCESS_GROUP and "start_new_session" not in kw)
+            pu.spawn_terminal(["py", "a;b"], "c", "cv · t1 · Fix parser; add tests")
+            check("windows wt escapes ; (else it splits the command line)", popen.call_args[0][0] ==
+                  ["wt.exe", "-w", "new", "--title", "cv · t1 · Fix parser\\; add tests", "py", "a\\;b"], popen.call_args[0][0])
         with mock.patch("shutil.which", which_only()):
             pu.spawn_terminal(["py", "f.py"], "c", "cv · t1")
             args, kw = popen.call_args

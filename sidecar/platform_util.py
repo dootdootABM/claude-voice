@@ -157,7 +157,10 @@ def spawn_terminal(argv, cls, title=None, wait=False, cwd=None):
         if wait:
             return subprocess.run(argv, cwd=cwd)  # wt returns at once, so run it right here and wait
         if shutil.which("wt"):
+            # wt splits its command line into subcommands at every `;`, ours included ("Fix parser; add tests"):
+            # `\;` is a literal one.
             cmd = ["wt.exe", "-w", "new", *(["--title", title] if title else []), *argv]
+            cmd = cmd[:3] + [a.replace(";", "\\;") for a in cmd[3:]]
             flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         else:
             cmd, flags = list(argv), CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP  # (can't combine with DETACHED)
