@@ -92,6 +92,19 @@ def _wasapi_auto_convert():
     return sd.WasapiSettings(auto_convert=True)
 
 
+def _wasapi_device(kind):
+    """WASAPI's own default "input" or "output" device, or None. WasapiSettings only works on a WASAPI device, and the
+    system default is often an MME one (PaErrorCode -9984: incompatible host API specific stream info)."""
+    try:
+        for api in sd.query_hostapis():
+            if "WASAPI" in api["name"]:
+                i = api[f"default_{kind}_device"]
+                return i if i >= 0 else None
+    except Exception:  # noqa: BLE001 - no host API list: the system default it is
+        pass
+    return None
+
+
 def _native_rate(kind):
     return int(round(sd.query_devices(kind=kind)["default_samplerate"]))
 
@@ -154,8 +167,9 @@ class Mic:
             return
         # Windows shared mode often refuses 16 kHz: let WASAPI convert, else open at the native rate and resample.
         try:
-            self.stream = sd.InputStream(samplerate=MIC_SR, channels=1, dtype="float32", blocksize=FRAME,
-                                         extra_settings=_wasapi_auto_convert(), callback=self._cb)
+            self.stream = sd.InputStream(device=_wasapi_device("input"), samplerate=MIC_SR, channels=1,
+                                         dtype="float32", blocksize=FRAME, extra_settings=_wasapi_auto_convert(),
+                                         callback=self._cb)
             cvlog.log.event("mic", "WASAPI auto-convert at 16 kHz")
         except Exception as e:  # noqa: BLE001
             rate = _native_rate("input")
@@ -248,9 +262,9 @@ class Player:
                                           latency="low", callback=self._cb)
         else:
             try:
-                self.stream = sd.OutputStream(samplerate=TTS_SR, channels=1, dtype="float32", blocksize=480,
-                                              latency=WIN_OUT_LATENCY, extra_settings=_wasapi_auto_convert(),
-                                              callback=self._cb)
+                self.stream = sd.OutputStream(device=_wasapi_device("output"), samplerate=TTS_SR, channels=1,
+                                              dtype="float32", blocksize=480, latency=WIN_OUT_LATENCY,
+                                              extra_settings=_wasapi_auto_convert(), callback=self._cb)
             except Exception as e:  # noqa: BLE001
                 rate = _native_rate("output")
                 cvlog.log.event("speaker", f"auto-convert failed ({e}); native {rate} Hz with resampling")

@@ -123,3 +123,17 @@ def test_tts_load_cpu_never_selects_cuda_even_when_available():
     assert model_path.endswith("kokoro-v1.0.int8.onnx")
     assert kwargs["providers"] == ["CPUExecutionProvider"]
     assert device == "CPUExecutionProvider"
+
+
+def test_auto_convert_opens_the_wasapi_devices():
+    # The system default is often an MME device, which WasapiSettings refuses (-9984): use WASAPI's own defaults.
+    sd, calls = _sd_mock(fail_first=False)
+    sd.query_hostapis.return_value = [{"name": "MME", "default_input_device": 1, "default_output_device": 3},
+                                      {"name": "Windows WASAPI", "default_input_device": 9, "default_output_device": 8}]
+    with mock.patch.object(audio, "sd", sd), mock.patch.object(audio.platform_util, "is_windows", return_value=True):
+        audio.Mic(mock.MagicMock())
+        audio.Player()
+    assert [c["device"] for c in calls] == [9, 8]
+    sd.query_hostapis.return_value = [{"name": "MME", "default_input_device": 1, "default_output_device": 3}]
+    with mock.patch.object(audio, "sd", sd):
+        assert audio._wasapi_device("input") is None  # no WASAPI: the system default, then the usual fallback
