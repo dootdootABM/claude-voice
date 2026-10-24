@@ -178,3 +178,12 @@ def test_job_rules(monkeypatch):
     monkeypatch.setattr(o.time, "monotonic", lambda: 5.0)
     monkeypatch.setattr(o.Backend, "_on_event", lambda self, ev: None)  # the base class's transcript output isn't under test
     asyncio.run(main())
+
+
+def test_checker_is_told_when_a_step_is_shortened():
+    short = o.step_text({"file_path": "a.py", "content": "x = 1\n"})
+    assert "more characters" not in short and "x = 1" in short
+    body = "y" * (o.CHECK_TEXT_MAX + 1345)
+    text = o.step_text({"file_path": "a.py", "content": body})
+    assert "1345 more characters, not shown here" in text  # not a file that looks written cut off
+    assert "y" * (o.CHECK_TEXT_MAX + 1) not in text

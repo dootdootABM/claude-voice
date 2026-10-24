@@ -43,6 +43,7 @@ from agents import SHELL_TOOLS, prompt_note, Backend, STATE_DIR, Task, decided_b
 # one job from eating the plan's 5-hour and weekly limits. Never spoken as money.
 BUDGET_WARN = 0.8
 CHECK_TIMEOUT_S = 120
+CHECK_TEXT_MAX = 3000  # characters of each field of a step that the checker is shown
 # Order of events (a worker finishing, a piece marked done): a counter, not the clock, whose ticks on Windows are
 # ~15 ms apart, so a builder and its reviewer could seem to finish at the same moment.
 ORDER = itertools.count(1)
@@ -137,6 +138,16 @@ def read_only(command):
 
 def state_dir(project_dir):
     return os.path.join(STATE_DIR, "projects", sessions.slug(project_dir))
+
+
+def step_text(inp):
+    """The step as the checker sees it: long strings are shortened, and say so, or a long file reads as one that was
+    written cut off mid-line (the checker refused complete files over the limit as broken)."""
+    def short(v):
+        if not isinstance(v, str) or len(v) <= CHECK_TEXT_MAX:
+            return v
+        return v[:CHECK_TEXT_MAX] + f"\n[... {len(v) - CHECK_TEXT_MAX} more characters, not shown here; the step has them all]"
+    return json.dumps({k: short(v) for k, v in inp.items()}, indent=1)
 
 
 class Worker:
@@ -377,7 +388,7 @@ class JobBackend(Backend):
     async def _check(self, w, name, inp, verb, target):
         """The step checker. → (True | False | None for no answer, reason)"""
         t = self.task
-        step = json.dumps({k: (v[:3000] if isinstance(v, str) else v) for k, v in inp.items()}, indent=1)
+        step = step_text(inp)
         ask = (f"APPROVED PLAN:\n{t.plan or '(not recorded)'}\n\nDONE LIST:\n{self._done_text(self.done_list()) or 'none yet'}"
                f"\n\nWORKER: {w.kind}\nITS BRIEF:\n{w.brief or w.description}\n\nFILES IT EDITED SO FAR: "
                f"{', '.join(sorted(w.files)) or 'none'}\n\nTHE STEP: {name} ({verb} {target})\n{step}")
