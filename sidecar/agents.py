@@ -876,9 +876,10 @@ class Front:
                            CLOSE_SCHEMA, self._close),
             "set_approval_mode": ("Switch between asking for each plan and step (ask) and blanket approval (full).",
                                   MODE_SCHEMA, self._set_mode),
-            "show_output": ("Open the full output of a finished round of work in a window on the user's screen, "
-                            "when they want to read or see it (\"show me\", \"put that on screen\", \"let me read "
-                            "it\").", SHOW_SCHEMA, self._show),
+            "show_output": ("Open a task's window on the user's screen: its full output when a round is finished, "
+                            "or its work live while it runs. For when they want to read, see or watch it (\"show "
+                            "me\", \"put that on screen\", \"let me read it\", \"open the live output\").",
+                            SHOW_SCHEMA, self._show),
             "end_session": ("Close the voice assistant when the user says goodbye or asks to exit or quit.",
                             EXIT_SCHEMA, self._end_session),
         })

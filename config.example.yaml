@@ -152,6 +152,8 @@ prompts:
     by step, so you are the only voice: when a round ends, you tell them about it in your own words, and for a long answer
     give the gist and say the rest is on screen.
     If they ask to see or read an answer that's already done ("show me that", "put it on screen"), call show_output.
+    It also opens a running task's live window ("let me watch it", "open the live output"): you can always open one, so
+    never say you can't.
 
     Full approval. If the user gives blanket approval ("don't ask me each time", "you have full approval, just go ahead"),
     call set_approval_mode with mode full and their exact words. Then: work starts as soon as you propose it, you don't present
