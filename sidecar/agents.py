@@ -513,6 +513,21 @@ _DO_VERB = re.compile(r"\b(?:carry\s+out|execute|implement|follow(?!\s+up\b)|app
 _FILE_REF = re.compile(r"\.(?:md|markdown|txt)\b|\b(?:markdown|text)\s+file\b|\bchanges?\s+file\b", re.I)
 
 
+def make_new_project(path):
+    """A task for a new project ({new_project_dir}/<name>, where the front prompt puts new projects) gets its folder made,
+    along with the projects folder itself if that's missing too (~/src often is on a fresh machine). Any other missing
+    folder is left alone, so a mistyped path still fails. → True if it made it."""
+    base = os.path.realpath(os.path.expanduser(config.get()["user"]["project_dirs"][0]))
+    path = os.path.realpath(os.path.expanduser(path))
+    if os.path.normcase(os.path.dirname(path)) != os.path.normcase(base) or os.path.basename(path) in ("", ".", ".."):
+        return False
+    try:
+        os.makedirs(path)
+    except OSError:
+        return False
+    return True
+
+
 def asks_to_carry_out_file(message):
     """True when the message tells the work to carry out the instructions/plan/changes in a md/txt file (narrow on
     purpose: reading a file to answer a question, or a small task that merely mentions a file, doesn't match)."""
@@ -1499,6 +1514,9 @@ class Backend:
     async def start(self, message=None):
         """New task: send its prompt. Resumed task: send `message` into the restored session."""
         t = self.task
+        if not os.path.isdir(t.project_dir) and make_new_project(t.project_dir):
+            cvlog.log.event(f"task-{t.id}:new-project", t.project_dir)
+            self.app.ui.status(f"{t.id}: new project folder {t.project_dir}")
         if not os.path.isdir(t.project_dir):
             t.state = "failed"
             self.app.ui.error(f"{t.id}: project folder {t.project_dir} doesn't exist")

@@ -101,3 +101,15 @@ def test_resume_of_quick_task_is_not_refused():
                                  "size": "large"}))
     assert out.startswith("Continuing"), out
     assert len(sent) == 1
+
+
+def test_new_project_gets_its_folder(tmp_path, monkeypatch):
+    import config
+    projects = tmp_path / "src"  # missing too, as ~/src often is on a fresh machine
+    monkeypatch.setattr(config, "_current", {"user": {"project_dirs": [str(projects), str(tmp_path)]}})
+    assert agents.make_new_project(str(projects / "textstats"))
+    assert (projects / "textstats").is_dir()
+    assert not agents.make_new_project(str(projects / "textstats"))  # already there: nothing made
+    assert not agents.make_new_project(str(projects / "a" / "b"))  # only a folder right inside the projects folder
+    assert not agents.make_new_project(str(tmp_path / "elsewhere"))  # a mistyped path still fails
+    assert not (projects / "a").exists() and not (tmp_path / "elsewhere").exists()
