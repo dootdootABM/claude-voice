@@ -87,7 +87,8 @@ STATE_SCHEMA = {"type": "object", "properties": {"markdown": {"type": "string", 
                 "required": ["markdown"]}
 DONE_SCHEMA = {"type": "object", "properties": {
     "piece": {"type": "string", "description": "The piece's number and name from the plan, e.g. \"2. Parser tests\"."},
-    "summary": {"type": "string", "description": "What was done and what the reviewer confirmed, in a few lines."}},
+    "summary": {"type": "string", "description": "What was done and what the reviewer confirmed, in a few lines."},
+    "last": {"type": "boolean", "description": "True when this was the plan's last piece, so the job is finished."}},
     "required": ["piece", "summary"]}
 HAND_BACK_SCHEMA = {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}
 
@@ -259,7 +260,8 @@ class JobBackend(Backend):
         self.task.digest.append(f"done: {args.get('piece', '')}")
         self._live("job", what="piece_done", piece=args.get("piece", ""), summary=args.get("summary", ""), files=files)
         self.app.ui.status(f"{self.task.id}: done — {args.get('piece', '')} ({len(files)} files)")
-        if self.task.context >= FRESH_AFTER:
+        # No hand-on after the last piece: a fresh orchestrator would only re-read the job to write the final report.
+        if self.task.context >= FRESH_AFTER and not args.get("last"):
             self.hand_on = True
             return ("Recorded. This conversation has grown long, so the job carries on in a fresh one. Now call "
                     "save_state with the whole current state (what's done, what's next, decisions, open questions), "

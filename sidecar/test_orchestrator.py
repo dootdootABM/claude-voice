@@ -125,6 +125,17 @@ async def main():
     b._hand_on = hand_on_stub
     check("round end hands on", (await b._after_round("saved", True), handed), (True, [True]))
 
+    # ... but not after the plan's last piece: that conversation writes the final report itself.
+    b.hand_on = False
+    started(b, "b5", "builder")
+    await b._permission("Edit", edit, {"agent_id": "b5"})
+    finished(b, "b5")
+    started(b, "r5", "reviewer")
+    finished(b, "r5")
+    check("last piece in a long conversation", (await b._mark_done({"piece": "3", "summary": "x", "last": True}))[:8],
+          "Recorded")
+    check("no hand-on after the last piece", b.hand_on, False)
+
     check("save_state with the tool's name for the field", await b._save_state({"state": "# where we are"}), "Saved.")
     check("state written", b.state(), "# where we are\n")
     check("empty save_state refused", (await b._save_state({"markdown": " "}))[:7], "Refused")
