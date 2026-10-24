@@ -502,3 +502,13 @@ def test_job_milestones_and_deciders_are_logged(state):
     assert box["by"] == "rules"
     b._deny("checker refused", "no", by="step_checker")
     assert box["by"] == "step_checker"
+
+
+def test_open_window_already_open_brings_it_forward(terminal, monkeypatch):
+    spawned, alive = terminal
+    focused = []
+    monkeypatch.setattr(live.platform_util, "focus_window", lambda title: focused.append(title) or True)
+    live.append("t3", live.event("text", text="x"))
+    assert live.open_window("t3", title="cv · t3 · job") is True and focused == []
+    assert live.open_window("t3", title="cv · t3 · job") is False  # already open: no second window ...
+    assert focused == ["cv · t3 · job"] and len(spawned) == 1  # ... but it's brought to the front

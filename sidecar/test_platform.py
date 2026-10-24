@@ -211,3 +211,8 @@ def test_projects_and_theme():
     with open(bad, "wb") as f:
         f.write(b"\xff\xfe\x00bad")
     check("theme with an unreadable palette doesn't raise", theme.Theme(path=bad).hex("accent") == theme.DEFAULTS["accent"])
+
+
+def test_focus_window_is_windows_only():
+    with on("linux"), mock.patch("ctypes.WinDLL", create=True) as dll:
+        check("linux: focus_window does nothing", pu.focus_window("cv · t1") is False and not dll.called)

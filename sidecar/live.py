@@ -359,12 +359,14 @@ def has_events(task_id):
 
 
 def open_window(task_id, force=False, title=None, cwd=None, file=None):
-    """Open the task's live output window unless it is already open (then leave it). If it was closed, a new one
+    """Open the task's live output window unless it is already open (then leave it, on Windows brought to the front
+    by its title). If it was closed, a new one
     replays the whole file. With file= (a saved output, for a task that has no live log) that Markdown file is shown
     instead, still one window per task. force=True opens another one regardless. → True if a window was started,
     False if one was already open. Raises OSError if no window could be started."""
     key = file_key(task_id) if file else task_id
     if not force and window_alive(key):
+        platform_util.focus_window(title)  # Windows: bring it to the front (elsewhere a no-op)
         return False
     argv = file_command(task_id, file) if file else viewer_command(task_id)
     started = _now()

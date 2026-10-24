@@ -173,6 +173,39 @@ def spawn_terminal(argv, cls, title=None, wait=False, cwd=None):
     return subprocess.Popen([*kitty, *argv], cwd=cwd, start_new_session=True, **quiet)  # outlives a cv restart
 
 
+def focus_window(title):
+    """Bring the window with exactly this title to the front (restoring it if minimised). → True if found.
+    Windows only, where an open output window otherwise stays behind cv; Windows Terminal keeps the --title it was
+    opened with. Elsewhere it does nothing (→ False)."""
+    if not is_windows() or not title:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        found = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def each(hwnd, _):
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n == len(title) and user32.IsWindowVisible(hwnd):
+                buf = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(hwnd, buf, n + 1)
+                if buf.value == title:
+                    found.append(hwnd)
+                    return False  # stop
+            return True
+
+        user32.EnumWindows(each, 0)
+        if not found:
+            return False
+        if user32.IsIconic(found[0]):
+            user32.ShowWindow(found[0], 9)  # SW_RESTORE
+        return bool(user32.SetForegroundWindow(found[0]))
+    except (OSError, AttributeError):
+        return False
+
+
 def pid_alive(pid):
     """Is a process with this pid running? (os.kill(pid, 0) would terminate it on Windows, so ask the OS instead.)
     A zombie (exited, not yet reaped by its parent) counts as gone."""
