@@ -23,7 +23,6 @@ import time
 from rich.console import Group
 from rich.style import Style
 from rich.text import Text
-from markdown_it import MarkdownIt
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Static
@@ -356,7 +355,8 @@ class Entry(Horizontal):
     Entry { height: auto; }
     Entry > .mark { width: 2; height: 1; }
     Entry > Vertical { width: 1fr; height: auto; }
-    Entry Block, Entry Wide, Entry Callout { margin: 0 0 1 0; }
+    Entry Block, Entry Wide, Entry Callout, Entry CodeBlock { margin: 0 0 1 0; }
+    Entry CodeBlock > Wide { margin: 0; }
     Entry Vertical > *:last-child { margin: 0; }
     """
 
@@ -836,8 +836,7 @@ class Flow:
 
     async def apply_text(self, container, text, mark="●"):
         p = self.pal
-        md = MarkdownIt("commonmark", {"html": False}).enable("table").enable("strikethrough")
-        widgets = [w for n in tree(md.parse(text)) if (w := block_widget(n, Renderer(p), p)) is not None]
+        widgets = [w for n in tree(show_output.markdown().parse(text)) if (w := block_widget(n, Renderer(p), p)) is not None]
         if widgets:
             await self.put(container, Entry(widgets, p, mark))
 

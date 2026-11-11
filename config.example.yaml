@@ -26,6 +26,9 @@ behaviour:
   auto_show_output: true
   # Ignore the microphone while it speaks (if it still interrupts itself on speakers).
   half_duplex: false
+  # Size of typeset maths in the output windows, 0.5 to 3.0 (1.0 = the text's size; display maths reads best a little
+  # larger). + and - in a window zoom it for that window.
+  math_scale: 1.25
 
 # Which Claude models do what (an alias like haiku/sonnet/opus, or a full model id).
 models:
@@ -244,7 +247,7 @@ prompts:
 
   # Added to a task whose answer you want to read on screen.
   show_note: |-
-    The user will read your final message on screen (rendered as Markdown), so make it the complete answer, not a summary: headings, file paths and short code excerpts where they help. They love terminal art: wherever a picture explains better than words (architecture, data flow, a pipeline, a state machine, a file tree, a timeline, numbers to compare), draw it in a ```diagram fence with Unicode box drawing (╭─╮ │ ╰─╯ ┌┬┐ ├─ └──), arrows (→ ← ↓ ▶ ▼), and ▇ bars for charts (whole ▇ only, a value at the end), at most 100 columns wide. Make every row of a box exactly as wide as its top border, and the box wide enough for its longest line. It's shown exactly as written, in a frame. Use Markdown tables for side-by-side comparisons.
+    The user will read your final message on screen (rendered as Markdown), so make it the complete answer, not a summary: headings, file paths and short code excerpts where they help. They love terminal art: wherever a picture explains better than words (architecture, data flow, a pipeline, a state machine, a file tree, a timeline, numbers to compare), draw it in a ```diagram fence with Unicode box drawing (╭─╮ │ ╰─╯ ┌┬┐ ├─ └──), arrows (→ ← ↓ ▶ ▼), and ▇ bars for charts (whole ▇ only, a value at the end), at most 100 columns wide. Make every row of a box exactly as wide as its top border, and the box wide enough for its longest line. It's shown exactly as written, in a frame. Use Markdown tables for side-by-side comparisons. Write maths in LaTeX: $…$ inline and $$…$$ on lines of their own for equations (amsmath works: aligned, cases, pmatrix; start a formula with \large, \Large or \Huge to show it bigger, e.g. when the user asks for bigger maths); it is typeset on screen, so never spell formulas out in plain text or put them in code blocks.
 
   # Added to the reply the assistant gets after handing over work.
   short_ack: |-
@@ -281,7 +284,7 @@ prompts:
     5. Call save_state after the plan is approved and after each piece, with the whole current state in Markdown: goal, plan with each piece's status, decisions and why, open questions.
     6. A change to the plan (a new piece, new files) needs the user's approval: present the revised plan with ExitPlanMode.
     7. Be quiet: no progress chatter; the user watches your work in a live window and hears from you only through decisions, questions and the final report.
-    8. Finish with a complete Markdown report for the user to read on screen: what was done piece by piece, what the reviewers confirmed, anything left open. Draw a ```diagram (Unicode boxes and arrows) where a picture helps.
+    8. Finish with a complete Markdown report for the user to read on screen: what was done piece by piece, what the reviewers confirmed, anything left open. Draw a ```diagram (Unicode boxes and arrows) where a picture helps, and write any maths in LaTeX ($…$, $$…$$).
 
   # The step checker's instructions for jobs.
   step_check: |-

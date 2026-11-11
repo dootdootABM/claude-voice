@@ -8,7 +8,8 @@ losing their shape (```diagram terminal art, code, tables) keep their shape and 
 narrower than they are, instead of being cut or broken.
 
 Keys: ↑↓/j k scroll · ←→/h l wide blocks sideways · space/b page · g/G top/end · ] [ next/previous section ·
-t contents · y copy · q close
+t contents · y copy · + - 0 maths size · q close
+Mouse: select text and it's copied when you let go · ⧉ copy (or right-click) on a code block copies the whole block
 Run: python show_output.py <file.md>   or   python show_output.py --live <task-id>  (live_view.py)
 """
 
@@ -20,6 +21,8 @@ import time
 import asyncio
 import platform_util
 from markdown_it import MarkdownIt
+from mdit_py_plugins.dollarmath import dollarmath_plugin
+from mdit_py_plugins.texmath import texmath_plugin
 from rich import box
 from rich.console import Group
 from rich.panel import Panel
@@ -36,10 +39,13 @@ from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
 import art_fix
+import mathtex
 import orb
 from theme import Theme, mix
 
 DIAGRAM_LANGS = ("diagram", "art", "ascii", "text-art")
+MATH_BLOCKS = ("math_block", "math_block_label", "math_block_eqno")
+MATH_INLINE = ("math_inline", "math_inline_double", "math_single")
 # In terminal art: box lines stay quiet, arrows and markers stand out, bars get a gradient. By Unicode block.
 LINES = re.compile(r"[─-╿]+")
 ARROWS = re.compile(r"[←-⇿■-◿➔➤]+")
@@ -88,6 +94,23 @@ class Palette:
 
 
 # ---- Markdown → blocks ------------------------------------------------------------------------------------------
+def markdown():
+    """The parser for answers: CommonMark, tables, strikethrough, and LaTeX maths ($…$, $$…$$, \\(…\\), \\[…\\]).
+    "$5 and $10" stays text: a $ next to a space, or a closing $ before a digit, doesn't start or end maths."""
+    return (MarkdownIt("commonmark", {"html": False}).enable("table").enable("strikethrough")
+            .use(dollarmath_plugin, allow_space=False, allow_digits=False, double_inline=True)
+            .use(texmath_plugin, delimiters="brackets"))
+
+
+def math_source(n):
+    """The TeX of a display-maths node ($$…$$, \\[…\\] or a ```math fence), or None if it isn't one."""
+    if n["type"] in MATH_BLOCKS:
+        return n["tok"].content.strip()
+    if n["type"] == "fence" and (n["tok"].info or "").split()[:1] == ["math"]:
+        return n["tok"].content.strip()
+    return None
+
+
 def tree(tokens):
     """markdown-it's flat token stream → nested nodes {type, tok, children}."""
     root = {"type": "root", "tok": None, "children": []}
@@ -129,6 +152,8 @@ class Renderer:
                 style += Style(color=p.hex("accent2"), underline=True, link=link)
             if c.type == "text":
                 out.append(c.content, style + (Style(color=p.hex("foreground")) if bold and not link else Style()))
+            elif c.type in MATH_INLINE:
+                out.append(mathtex.to_unicode(c.content), style + Style(color=p.hex("accent3"), italic=True))
             elif c.type == "code_inline":
                 out.append(f" {c.content} ", Style(color=p.hex("accent3"), bgcolor=p.tint("accent3", 0.14)))
             elif c.type == "strong_open":
@@ -170,6 +195,8 @@ class Renderer:
             return self.quote(n, depth)
         if t == "heading":  # nested (inside a list or quote): no big styling
             return self.inline(n["children"][0], f"bold {p.hex('accent2')}")
+        if (tex := math_source(n)) is not None:
+            return self.math(tex)
         if t in ("fence", "code_block"):
             return self.code(n["tok"])
         if t == "table":
@@ -232,6 +259,10 @@ class Renderer:
                         word_wrap=False, background_color="default", indent_guides=True)
         return Panel(syntax, box=box.ROUNDED, border_style=p.tint("accent", 0.55), padding=(0, 1), expand=False,
                      title=Text(f" {lang} ", style=f"bold {p.hex('accent')}") if lang else None, title_align="left")
+
+    def math(self, tex):
+        """Display maths as Unicode text (the image comes in MathBlock, where the terminal can show one)."""
+        return Text(mathtex.to_unicode(tex), style=f"italic {self.p.hex('accent3')}", justify="center")
 
     def art(self, src):
         p = self.p
@@ -328,6 +359,88 @@ class Wide(HorizontalScroll):
             self.children[0].styles.width = max(self.natural, self.size.width)
 
 
+class CopyButton(Static):
+    """The "⧉ copy" on a code block's top border: one click puts the whole block on the clipboard."""
+
+    LABEL, DONE = " ⧉ copy ", " ✓ copied "
+    DEFAULT_CSS = "CopyButton { width: auto; height: 1; position: absolute; }"
+    ALLOW_SELECT = False
+
+    def __init__(self, code, pal):
+        super().__init__(self.LABEL)
+        self.code, self.pal = code, pal
+        self.tooltip = "copy this block (right-click the block works too)"
+
+    def on_mount(self):
+        self.paint(False)
+
+    def paint(self, hover):
+        p = self.pal
+        self.styles.color = p.hex("background") if hover else p.hex("accent")
+        self.styles.background = p.hex("accent") if hover else p.tint("accent", 0.12)
+
+    def on_enter(self):
+        self.paint(True)
+
+    def on_leave(self):
+        self.paint(False)
+
+    def on_click(self, event):
+        event.stop()
+        if copy_to_clipboard(self.app, self.code, "copied the block"):
+            self.update(self.DONE)
+            self.set_timer(1.5, lambda: self.update(self.LABEL))
+
+
+class CodeBlock(Widget):
+    """A code block (it scrolls sideways like any Wide block) with a copy button at the top right of its frame.
+    Right-clicking anywhere on the block copies it as well."""
+
+    DEFAULT_CSS = "CodeBlock { height: auto; margin: 0 0 1 0; } CodeBlock > Wide { margin: 0; }"
+
+    def __init__(self, renderable, code, pal):
+        super().__init__()
+        self.renderable, self.code, self.pal = renderable, code, pal
+
+    def compose(self):
+        yield Wide(self.renderable)
+        yield CopyButton(self.code, self.pal)
+
+    def on_mount(self):
+        self.call_after_refresh(self.place)
+
+    def on_resize(self):
+        self.call_after_refresh(self.place)
+
+    def place(self):
+        """On the frame's top border, two cells in from its right corner (or the window's edge if it's wider)."""
+        try:
+            wide, button = self.query_one(Wide), self.query_one(CopyButton)
+        except NoMatches:
+            return
+        right = min(getattr(wide, "natural", self.size.width), self.size.width)
+        button.styles.offset = (max(0, right - len(CopyButton.DONE) - 2), 0)
+
+    def on_click(self, event):
+        if event.button == 3:  # right-click: copy the block
+            event.stop()
+            copy_to_clipboard(self.app, self.code, "copied the block")
+
+
+def copy_to_clipboard(app, text, done):
+    """The system clipboard (wl-copy, xclip, …), else the terminal's (OSC 52, which kitty supports); toast it."""
+    ok = platform_util.copy_text(text)
+    if not ok:
+        try:
+            app.copy_to_clipboard(text)
+            ok = True
+        except Exception:  # noqa: BLE001
+            ok = False
+    if hasattr(app, "toast"):
+        app.toast(done if ok else "couldn't copy (no clipboard tool found)")
+    return ok
+
+
 class Callout(Static):
     """A quote or a GitHub-style callout (> [!NOTE]): a bar down its whole left side."""
 
@@ -348,10 +461,68 @@ class Heading(Static):
         self.title = title
 
 
+class MathBlock(Widget):
+    """Display maths: typeset by LaTeX into an image where the terminal can show one (kitty, sixel), centred. Until
+    the image is ready, and wherever it can't be made, the Unicode text of the formula stands in."""
+
+    DEFAULT_CSS = """
+    MathBlock { height: auto; margin: 0 0 1 0; align-horizontal: center; }
+    MathBlock > Static { width: 1fr; height: auto; }
+    MathBlock > .math-image { width: auto; height: auto; }
+    """
+
+    def __init__(self, tex, text, rgb):
+        super().__init__()
+        self.tex, self.text, self.rgb = tex, text, rgb
+
+    def compose(self):
+        yield Static(self.text)
+
+    def on_mount(self):
+        if mathtex.graphics():
+            self.run_worker(self._typeset, thread=True, exit_on_error=False)
+
+    def retypeset(self):
+        """Again, at the window's new zoom."""
+        if mathtex.graphics():
+            self.run_worker(self._typeset, thread=True, exit_on_error=False, group="typeset", exclusive=True)
+
+    def _typeset(self):
+        Image, cell_w, cell_h = mathtex.graphics()
+        img = mathtex.render(self.tex, self.rgb, cell_h, getattr(self.app, "math_scale", 1.0))
+        if img is not None:
+            # padded to whole cells and sized to them exactly, so it is drawn pixel for pixel (crisp)
+            img, cells = mathtex.fit_cells(img, cell_w, cell_h)
+            self.app.call_from_thread(self._show, Image, img, cells)
+
+    async def _show(self, Image, img, cells):
+        if not self.is_attached:
+            return
+        await self.remove_children()
+        w = Image(img, classes="math-image")
+        w.styles.width, w.styles.height = cells
+        await self.mount(w)
+
+
+def math_scale_setting():
+    """behaviour.math_scale from the config (its default if it can't be read)."""
+    try:
+        import config
+        return float(config.get()["behaviour"]["math_scale"])
+    except Exception:  # noqa: BLE001 - the window must open whatever the config says
+        return 1.25
+
+
 def block_widget(n, r, pal):
-    """The widget for one top-level node: a Callout, a Wide (art, code, table) or a Block; None if it draws nothing."""
+    """The widget for one top-level node: a Callout, a Wide (art, code, table), maths or a Block; None if it draws
+    nothing."""
+    if (tex := math_source(n)) is not None:
+        return MathBlock(tex, r.math(tex), pal.rgb("foreground"))
     if n["type"] == "blockquote":
         return Callout(*r.quote(n, 0, framed=False), pal)
+    lang = ((n["tok"].info or "").split() or [""])[0].lower() if n["type"] in ("fence", "code_block") else None
+    if lang is not None and lang not in DIAGRAM_LANGS:  # code (not terminal art): with a copy button
+        return CodeBlock(r.block(n), n["tok"].content.rstrip("\n"), pal)
     if n["type"] in ("fence", "code_block", "table"):
         return Wide(r.block(n))
     rend = r.block(n)
@@ -378,7 +549,10 @@ class OutputApp(App):
         Binding("left_square_bracket", "section(-1)", show=False),
         Binding("h,left", "sideways(-8)", show=False), Binding("l,right", "sideways(8)", show=False),
         Binding("t", "toc", show=False), Binding("y", "copy", show=False),
+        Binding("plus,equals_sign", "zoom(1)", show=False), Binding("minus", "zoom(-1)", show=False),
+        Binding("0", "zoom(0)", show=False),
     ]
+    ZOOM_STEP = 1.15
 
     def __init__(self, path):
         super().__init__(ansi_color=True)  # kitty's own background (and its opacity) shows through, like cv
@@ -387,6 +561,8 @@ class OutputApp(App):
         self.pal = Palette(self.theme_)
         self.source = open(path, encoding="utf-8").read()
         self.toast_until, self.toast_text = 0.0, ""
+        self.math_base = math_scale_setting()
+        self.math_scale = self.math_base  # behaviour.math_scale, times this window's zoom (+ / - / 0)
 
     # ---- layout -------------------------------------------------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -406,8 +582,7 @@ class OutputApp(App):
 
     def split(self):
         """→ (title, meta, nodes): cv's own header lines (# t1 · title, *project · time*) come off the top."""
-        md = MarkdownIt("commonmark", {"html": False}).enable("table").enable("strikethrough")
-        nodes = tree(md.parse(self.source))
+        nodes = tree(markdown().parse(self.source))
         title, meta = "", ""
         if nodes and nodes[0]["type"] == "heading" and nodes[0]["tok"].tag == "h1":
             title = plain(nodes.pop(0))
@@ -496,8 +671,9 @@ class OutputApp(App):
 
     def hint(self):
         wide = any(w.max_scroll_x for w in self.query(Wide))
+        maths = " · +- maths" if mathtex.graphics() and any(True for _ in self.query(MathBlock)) else ""
         return Text("↑↓ scroll · " + ("←→ wide blocks · " if wide else "") + "[ ] sections · t contents · "
-                    "y copy · q close", style=self.pal.hex("dim"))
+                    "y copy" + maths + " · q close", style=self.pal.hex("dim"))
 
     async def reload_theme(self):
         if self.theme_.reload() and self.is_running:
@@ -535,6 +711,18 @@ class OutputApp(App):
             if w.max_scroll_x and w.region.overlaps(body.region):
                 w.scroll_relative(x=n, animate=False)
 
+    def action_zoom(self, step):
+        """+ / - make the typeset maths bigger or smaller (0: back to behaviour.math_scale)."""
+        if not mathtex.graphics():
+            self.toast_text = "maths is shown as text here (no image support), so it can't be zoomed"
+        else:
+            self.math_scale = (self.math_base if step == 0 else
+                               min(4.0, max(0.4, self.math_scale * self.ZOOM_STEP ** step)))
+            for w in self.query(MathBlock):
+                w.retypeset()
+            self.toast_text = f"maths at {self.math_scale / self.math_base:.0%}"
+        self.toast_until = time.monotonic() + 2
+
     def action_toc(self):
         self.query_one("#toc").toggle_class("shown")
 
@@ -545,15 +733,22 @@ class OutputApp(App):
             self.query_one("#body").focus()
 
     def action_copy(self):
-        if platform_util.copy_text(self.source):
-            self.toast_text = "copied the whole answer"
-        else:
-            self.toast_text = "couldn't copy (no clipboard tool found)"
-        self.toast_until = time.monotonic() + 2
+        copy_to_clipboard(self, self.source, "copied the whole answer")
+
+    def toast(self, text):
+        self.toast_text, self.toast_until = text, time.monotonic() + 2
+
+    def on_text_selected(self, event):
+        """Select with the mouse and it's copied when you let go, like Claude Code (no Ctrl+C needed)."""
+        text = self.screen.get_selected_text()
+        if text and text.strip():
+            lines = text.count("\n") + 1
+            copy_to_clipboard(self, text, f"copied {lines} lines" if lines > 1 else f"copied {len(text)} characters")
 
 
 def main():
     platform_util.utf8_console()
+    mathtex.probe_graphics()  # asks the terminal about images: must happen before Textual owns the screen
     if sys.argv[1:2] == ["--live"] and len(sys.argv) > 2:  # a task's live log (live.py), followed like tail -f
         import live_view
         live_view.run(sys.argv[2])

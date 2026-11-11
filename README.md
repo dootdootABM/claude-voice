@@ -12,6 +12,9 @@ requests into Claude Code tasks that run in the background. Anything risky waits
 - **Jobs** handle multi-part work: an orchestrator plans (you approve the plan), then scout, builder and reviewer
   workers carry it out while a step checker vets their edits and commands.
 - **Live output window**: each task gets a window that follows its work as it happens. Press `o` to open it.
+  Select text with the mouse to copy it, or use the `⧉ copy` button on a code block.
+- **Maths**: answers can use LaTeX. In kitty, display maths is drawn as a formula image (needs LaTeX with `dvipng`,
+  or matplotlib); otherwise it is shown as Unicode text. `+` / `-` in a window resize it.
 - Only your claude.ai subscription is used. API keys and other providers are removed from every `claude` process.
 
 ## Requirements

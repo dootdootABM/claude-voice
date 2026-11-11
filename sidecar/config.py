@@ -34,7 +34,7 @@ DEFAULTS = {
         "preferences": "They like fast, minimal setups and short answers.",
         "load_global_claude_md": True,
     },
-    "behaviour": {"verbosity": "normal", "auto_show_output": True, "half_duplex": False},
+    "behaviour": {"verbosity": "normal", "auto_show_output": True, "half_duplex": False, "math_scale": 1.25},
     "models": {"front": "haiku", "backend": "sonnet", "job": "sonnet", "scout": "haiku", "checker": "sonnet"},
     "voice": {"name": "af_bella", "blend": {}, "speed": 1.05, "lang": "en-us", "pronounce": {}},
     "stt": {"device": "auto", "model": None, "fast_model": True},
@@ -55,6 +55,8 @@ COMMENTS = {
     "behaviour.verbosity": "How much it says when a task finishes a round: quiet | normal | chatty.",
     "behaviour.auto_show_output": "Open the live output window when a task starts.",
     "behaviour.half_duplex": "Ignore the microphone while it speaks (if it still interrupts itself on speakers).",
+    "behaviour.math_scale": "Size of typeset maths in the output windows, 0.5 to 3.0 (1.0 = the text's size; display maths reads best a little larger). "
+                            "+ and - in a window zoom it for that window.",
     "models": "Which Claude models do what (an alias like haiku/sonnet/opus, or a full model id).",
     "models.front": "The voice assistant you talk to.",
     "models.backend": "Default model for quick tasks.",
@@ -256,6 +258,9 @@ def _check(data, user, lines, voices, errors, warnings, label):
     typed("stt.model", lambda v: v is None or (isinstance(v, str) and v.strip()), "a model name or null", g("stt.model"))
     typed("input.global_ptt_key", lambda v: v is None or (isinstance(v, str) and v.strip()), 'a key like "ctrl+alt+v" or null',
           g("input.global_ptt_key"))
+    if typed("behaviour.math_scale", is_num, "a number", g("behaviour.math_scale")) and \
+            not 0.5 <= g("behaviour.math_scale") <= 3.0:
+        err("behaviour.math_scale", f"{g('behaviour.math_scale')} is outside 0.5 to 3.0")
     if typed("voice.speed", is_num, "a number", g("voice.speed")) and not 0.5 <= g("voice.speed") <= 2.0:
         err("voice.speed", f"{g('voice.speed')} is outside 0.5 to 2.0")
     if is_str(g("voice.name")) and g("voice.name") and (msg := voice_problem(g("voice.name"), voices)):

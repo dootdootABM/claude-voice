@@ -7,6 +7,9 @@ dependencies = [
     "faster-whisper>=1.2.1",
     "kokoro-onnx>=0.6.1",
     "markdown-it-py",
+    # LaTeX maths in the output windows: the $…$ / $$…$$ parser, and typeset formulas as images in kitty (or sixel)
+    "mdit-py-plugins",
+    "textual-image>=0.14",
     "numpy>=2.5.4",
     "platformdirs",
     "portalocker",

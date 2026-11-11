@@ -11,6 +11,9 @@ textual>=8.2.8
 # imported directly (show_output.py, tui.py); installed with textual, listed so the imports are covered
 rich
 markdown-it-py
+# LaTeX maths in the output windows: the $…$ / $$…$$ parser, and formulas as images in kitty (or sixel terminals)
+mdit-py-plugins
+textual-image>=0.14
 platformdirs
 portalocker
 # the config file (config.yaml)
