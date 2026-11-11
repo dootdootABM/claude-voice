@@ -127,3 +127,13 @@ def test_deletes_inside_the_project_only():
     assert agents.deletes_inside("find build -delete", PROJECT)
     for cmd in ("rm -rf .", "rm -rf ../x", "rm -rf ~/x", "rm -rf $HOME/x", "rm -rf /", f"rm -rf {PROJECT}"):
         assert not agents.deletes_inside(cmd, PROJECT), cmd
+
+
+def test_deletes_inside_judges_windows_paths():
+    project = r"D:\cv-test-project"
+    assert agents.deletes_inside(r"rm -rf D:\cv-test-project\build", project, nt=True)
+    assert agents.deletes_inside(r"rm -rf build", project, nt=True)
+    assert agents.deletes_inside(r'rm -rf "d:\CV-TEST-PROJECT\dist"', project, nt=True)  # case-insensitive
+    for cmd in (r"rm -rf D:\cv-test-project", r"rm -rf D:\cv-test-project\..", r"rm -rf D:\\", r"rm -rf C:\x",
+                r"rm -rf D:\cv-test-project-old", r"rm -rf %USERPROFILE%\x", r"rm -rf ..\other"):
+        assert not agents.deletes_inside(cmd, project, nt=True), cmd

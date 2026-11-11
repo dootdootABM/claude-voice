@@ -431,17 +431,27 @@ def save_mode(mode):
         cvlog.log.event("mode-save-error", repr(e))
 
 
-def deletes_inside(cmd, project_dir):
+def deletes_inside(cmd, project_dir, nt=None):
     """True when every rm / git rm / find -delete target in a shell command is strictly inside the project folder
-    (never the folder itself, home or /), so in auto mode the step checker may judge it."""
-    root = os.path.realpath(os.path.expanduser(project_dir))
-    home = os.path.realpath(os.path.expanduser("~"))
+    (never the folder itself, home or the drive's root), so in auto mode the step checker may judge it. nt: judge
+    Windows paths (backslashes kept, case-insensitive); defaults to this machine's kind."""
+    nt = os.name == "nt" if nt is None else nt
+    pm = ntpath if nt else os.path
+
+    def full(p, base=None):
+        p = pm.expanduser(p)
+        p = pm.join(base, p) if base else p
+        return pm.normcase(pm.abspath(p) if nt else os.path.realpath(p))
+
+    root, home = full(project_dir), full("~")
     found = False
     for seg in re.split(r"&&|\|\||[;|\n]", cmd):
         try:
-            tok = shlex.split(seg, comments=True)
+            tok = shlex.split(seg, comments=True, posix=not nt)
         except ValueError:
             return False
+        if nt:
+            tok = [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "'\"" else t for t in tok]
         for i, t in enumerate(tok):
             if t not in ("rm", "find"):
                 continue
@@ -453,10 +463,11 @@ def deletes_inside(cmd, project_dir):
             if not targets:
                 return False
             for a in targets:
-                if "$" in a or "`" in a:
+                if "$" in a or "`" in a or "%" in a:
                     return False
-                real = os.path.realpath(os.path.join(root, os.path.expanduser(a)))
-                if real in (root, home, os.sep) or not real.startswith(root + os.sep):
+                real = full(a, root)
+                drive_root = pm.normcase(pm.splitdrive(real)[0] + pm.sep)
+                if real in (root, home, drive_root, pm.sep) or not real.startswith(root.rstrip(pm.sep) + pm.sep):
                     return False
                 found = True
     return found
