@@ -186,6 +186,7 @@ class VoiceApp(App):
         Binding("e", "decide('e')", show=False),
         Binding("m", "decide('m')", show=False),
         Binding("p", "toggle_mode", "mode", show=False),
+        Binding("shift+tab", "cycle_approval", "approval mode", show=False, priority=True),
         Binding("o", "show_output", "output", show=False),
         Binding("q", "quit_app", "quit", show=False),
         Binding("ctrl+c", "quit_app", "quit", show=False, priority=True),
@@ -246,6 +247,17 @@ class VoiceApp(App):
         self.prefs["input_mode"] = new
         self.prefs["input_mode_config"] = config.get()["input"]["mode"]
         save_prefs(self.prefs)
+
+    def action_cycle_approval(self):
+        """Shift+Tab, as in Claude Code: ask → accept edits → auto."""
+        if not self.engine.ready or not self.engine.app:
+            return
+        mode = self.engine.app.cycle_mode()
+        cvlog.log.event("key", f"shift+tab → {mode}")
+        self.toast({"ask": "ask mode: you approve each task, plan and change",
+                    "edits": "⏵⏵ accept edits: file edits run without asking",
+                    "auto": "⏵⏵ auto: runs without asking, risky steps excepted"}[mode], seconds=3)
+        self.update_status()
 
     def _start_key_releases(self):
         """Ask the terminal for key-release events (kitty keyboard protocol) so the talk key can be held."""
@@ -336,6 +348,10 @@ class VoiceApp(App):
             else:
                 detail = "muted" + (f" · {detail}" if detail else "")
             hints = "space unmute · " + (hints.split(" · ", 1)[1] if hints.startswith("space mute") else hints or "q quit")
+        mode = getattr(getattr(e, "app", None), "mode", "ask")
+        if e.ready and mode in ("edits", "auto"):
+            hints = f"⏵⏵ {'accept edits' if mode == 'edits' else 'auto'} on (shift+tab)" + (
+                f" · {hints}" if hints else "")
         quitting = now < self.quit_armed_until
         if quitting:
             words, detail, hints = "work is still running", "", "q again to stop it and quit"

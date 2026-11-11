@@ -64,6 +64,15 @@ cv --list-voices
 **Orb UI keys:** `space` mute · `t` transcript · `i` type · `Esc` stop talking · `o` output window · `q` quit ·
 `a`/`r`/`e`/`m` approve, reject, edit or change the model of a pending decision.
 
+**Approval modes**, as in Claude Code. `Shift+Tab` cycles them (`/approval` in `--plain`), or just ask by voice.
+The mode you pick is kept across restarts.
+
+| Mode | What runs without asking |
+|---|---|
+| ask (default) | Reading, searching and read-only commands. New tasks, plans, edits and other commands ask. |
+| accept edits | Also file edits, and quick tasks skip the plan. Other commands still ask. |
+| auto | Everything. A checker approves risky steps that clearly fit the request (packages, services, stopping processes, files outside the project, deletes inside it). `sudo`, `git push` or history rewrites, deletes outside the project, disk/power commands, publishing, restarting cv, and job plans always ask. |
+
 **Push to talk:** set `input.mode: push_to_talk` in the config, then hold `v`. For a global hotkey, bind
 `cv ptt down` / `cv ptt up` (or `cv ptt toggle`) in your hotkey tool.
 

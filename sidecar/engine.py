@@ -15,7 +15,7 @@ import traceback
 import cvlog
 import config
 import ptt
-from agents import RESTART_FILE, App, Backend, Task, voice
+from agents import BACKEND_MODELS, RESTART_FILE, App, Backend, Task, voice
 import platform_util
 from audio import Listener, Mic, Player, Stt, Tts, Vad, pick_device
 
@@ -274,7 +274,7 @@ class Engine:
             d.task.prompt = (await asyncio.to_thread(edit_in_editor, d.task.prompt)).strip()
             self.app.front_notes.append(f"[the user edited the prompt of {d.task.id} on the keyboard]")
             self.app.resolve_by_keyboard(d, False, "__edited__")
-        elif cmd == "m" and d.kind == "task" and rest.strip() in ("sonnet", "opus", "haiku"):
+        elif cmd == "m" and d.kind == "task" and rest.strip() in BACKEND_MODELS:
             d.task.model = rest.strip()
             self.app.front_notes.append(f"[the user set {d.task.id}'s back-end model to {d.task.model}]")
             self.app.resolve_by_keyboard(d, False, "__edited__")

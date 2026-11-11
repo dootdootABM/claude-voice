@@ -47,3 +47,9 @@ def test_schema_and_prompt_explain_the_choice():
     assert "opus" in desc and "never a job" in desc
     import default_prompts
     assert "Back-end model (backend_model on propose_task)" in default_prompts.PROMPTS["front_agent"]
+
+
+def test_fable_can_be_chosen():
+    assert "fable" in agents.TASK_SCHEMA["properties"]["backend_model"]["enum"]
+    assert pick("Fable 5.2") == ("fable", "")
+    assert pick("claude-fable-5-2")[0] == "fable"

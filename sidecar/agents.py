@@ -92,12 +92,13 @@ TASK_SCHEMA = {
         "title": {"type": "string"},
         "prompt": {"type": "string", "description": "Complete, self-contained instructions for doing the work."},
         "project_dir": {"type": "string", "description": "Absolute path or ~/path of the project."},
-        "backend_model": {"type": "string", "enum": ["sonnet", "opus", "haiku"],
+        "backend_model": {"type": "string", "enum": ["sonnet", "opus", "haiku", "fable"],
                           "description": "Usually omit it: the user's default (sonnet) runs the task. opus: hard "
                           "reasoning where a wrong answer is costly (architecture or design decisions, a bug that is "
                           "hard to pin down or a fix that already failed, subtle algorithms or maths, security-"
                           "sensitive changes, a large refactor). haiku: only tiny mechanical quick tasks (run the "
-                          "tests, commit, push, a simple lookup), never a job. The user naming a model always wins."},
+                          "tests, commit, push, a simple lookup), never a job. fable: only when the user asks for Fable by name. The user "
+                          "naming a model always wins."},
         "spoken_summary": {"type": "string", "description": "One sentence to say out loud."},
         "go_ahead": GO_AHEAD,
         "show_output": SHOW,
@@ -107,7 +108,7 @@ TASK_SCHEMA = {
     },
     "required": ["title", "prompt", "project_dir", "spoken_summary"],
 }
-BACKEND_MODELS = ("sonnet", "opus", "haiku")
+BACKEND_MODELS = ("sonnet", "opus", "haiku", "fable")
 
 
 def pick_backend_model(args, user_text, default_job_model):
@@ -179,18 +180,24 @@ ANSWER_SCHEMA = {
 MODE_SCHEMA = {
     "type": "object",
     "properties": {
-        "mode": {"type": "string", "enum": ["ask", "full"],
-                 "description": "full: the user gave blanket approval; ask: back to checking each plan and step."},
+        "mode": {"type": "string", "enum": ["ask", "edits", "auto"],  # MODES
+                 "description": "ask: check each new task, plan and change. edits (accept edits): file edits run "
+                                "without asking, commands that change things still ask. auto: everything runs "
+                                "without asking except risky steps the checker can't approve, and job plans."},
         "user_quote": QUOTE,
     },
     "required": ["mode", "user_quote"],
 }
 
-# Even with full approval, these still come back for a yes: hard to undo, outside the project, or outward-facing.
+# These need a yes even in auto mode (some go to the step checker there, see CHECKABLE_RISKS): hard to undo, outside the project, or outward-facing.
 RISKY_COMMANDS = [
     (r"\bsudo\b|\bdoas\b", "it needs root"),
     (r"\b(kill|pkill|killall)\b", "it stops running processes"),
-    (r"\b(pacman|yay|paru|apt|dnf|pip3?\s+install\s+--break|npm\s+i(nstall)?\s+-g)\b", "it installs or removes packages"),
+    # pacman/yay/paru only when they change something (not -Q, -Ss, -Si, -Sl, -Sg, -F); yay or paru alone upgrades
+    (r"\b(pacman|yay|paru)\s+-(?!Q|S[sigl]+\b|F(?![a-zA-Z]*y)|V\b|h\b)|\b(yay|paru)\s*($|[;&|\n])"
+     r"|\b(apt(-get)?|dnf|zypper)\s+(install|reinstall|remove|purge|erase|upgrade|full-upgrade|dist-upgrade|update"
+     r"|autoremove)\b|\bpip3?\s+install\s+--break|\bnpm\s+i(nstall)?\s+-g\b|\bflatpak\s+(install|uninstall|update)\b",
+     "it installs or removes packages"),
     (r"\bgit\s+(push|reset\s+--hard|clean\s+-[a-zA-Z]*f|checkout\s+--\s|branch\s+-D|rebase)", "it rewrites or publishes git history"),
     (r"\b(npm|cargo|uv|twine)\s+publish\b", "it publishes a package"),
     (r"\bsystemctl\b[^;&|]*\b(enable|disable|start|stop|restart|mask|daemon-reload)\b|\bloginctl\b",
@@ -390,8 +397,93 @@ IMPLIED_BY = {
 }
 
 
+# Approval modes, as in Claude Code: ask (the default) → edits (accept edits) → auto. Shift+Tab in the orb cycles
+# them, the front agent switches them by voice, and the choice is kept across restarts.
+MODES = ("ask", "edits", "auto")
+MODE_NAMES = {"ask": "ask", "edits": "accept edits", "auto": "auto"}
+MODE_FILE = os.path.join(STATE_DIR, "approval.json")
+# In auto mode the step checker may let these risky steps through. Every other reason (root, git push or history
+# rewrites, publishing, disk or power, downloaded scripts, system or key files, deleting outside the project or from a
+# script, restarting cv) always comes to the user.
+CHECKABLE_RISKS = {"it installs or removes packages", "it stops running processes", "it changes system services",
+                   "it changes a file outside the project"}
+DELETE_RISKS = {"it deletes files recursively or forcibly", "it deletes files (find -delete)",
+                "it deletes files from the project (git rm)"}
+
+
+def load_mode():
+    try:
+        with open(MODE_FILE, encoding="utf-8") as f:
+            mode = json.load(f).get("mode")
+    except (OSError, ValueError, AttributeError):
+        return "ask"
+    return mode if mode in MODES else "ask"
+
+
+def save_mode(mode):
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        tmp = MODE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"mode": mode}, f)
+        os.replace(tmp, MODE_FILE)
+    except OSError as e:
+        cvlog.log.event("mode-save-error", repr(e))
+
+
+def deletes_inside(cmd, project_dir):
+    """True when every rm / git rm / find -delete target in a shell command is strictly inside the project folder
+    (never the folder itself, home or /), so in auto mode the step checker may judge it."""
+    root = os.path.realpath(os.path.expanduser(project_dir))
+    home = os.path.realpath(os.path.expanduser("~"))
+    found = False
+    for seg in re.split(r"&&|\|\||[;|\n]", cmd):
+        try:
+            tok = shlex.split(seg, comments=True)
+        except ValueError:
+            return False
+        for i, t in enumerate(tok):
+            if t not in ("rm", "find"):
+                continue
+            if t == "find" and "-delete" not in tok[i:]:
+                continue
+            targets = [a for a in tok[i + 1:] if not a.startswith("-")]
+            if t == "find":
+                targets = targets[:1]
+            if not targets:
+                return False
+            for a in targets:
+                if "$" in a or "`" in a:
+                    return False
+                real = os.path.realpath(os.path.join(root, os.path.expanduser(a)))
+                if real in (root, home, os.sep) or not real.startswith(root + os.sep):
+                    return False
+                found = True
+    return found
+
+
+SECRET_DIRS = ("~/.ssh", "~/.gnupg", "~/.aws", "~/.azure", "~/.password-store")
+
+
+def reads_secrets(inp):
+    """A Read/Grep/Glob of a key or credential folder: that still needs a yes."""
+    path = inp.get("file_path") or inp.get("path") or inp.get("notebook_path") or ""
+    if not path:
+        return False
+    real = os.path.realpath(os.path.expanduser(path))
+    dirs = [os.path.realpath(os.path.expanduser(d)) for d in SECRET_DIRS]
+    return any(real == d or real.startswith(d + os.sep) for d in dirs)
+
+
+def checker_may_judge(why, name, inp, project_dir):
+    """In auto mode: is this risky step one the step checker may approve, rather than always asking the user?"""
+    if why in CHECKABLE_RISKS:
+        return True
+    return why in DELETE_RISKS and name in SHELL_TOOLS and deletes_inside(inp.get("command", ""), project_dir)
+
+
 def risk(name, inp, project_dir):
-    """Why this step needs a yes even with full approval, or None."""
+    """Why this step needs a yes even in auto mode, or None (in auto mode some reasons go to the step checker)."""
     if name.endswith("restart_voice_app"):
         return "it restarts the voice app"
     if name in SHELL_TOOLS:
@@ -585,7 +677,7 @@ class Task:
         self.backend = None
         self.steps = 0
         self.auto_edits = False  # the user said to stop asking about edits; lasts for the whole task
-        self.review_next_plan = False  # "plan first" asked for: show the plan even with full approval
+        self.review_next_plan = False  # "plan first" asked for: show the plan even in auto mode
         self.go_ahead = set()  # words of a request that was its own go-ahead ("commit it"); lasts one round
         self.digest = collections.deque(maxlen=12)
         self.session_id = None  # the Claude Code session, so the work can be resumed later
@@ -677,12 +769,39 @@ class App:
         self.decisions = collections.deque()
         self.front_notes = []  # outcomes Haiku should hear on its next turn (costs nothing until you speak)
         self.verbosity = "normal"  # quiet | normal | chatty
-        self.full_approval = False  # the user gave blanket approval: only risky steps and questions come back
+        self.mode = load_mode()  # approval mode: ask | edits | auto (MODES), kept across restarts
         self.user_speaking = lambda: False  # replaced by the voice UI
         self.on_exit = lambda: None  # set by the UI: close the app
         self.exit_requested = False
         self.restart_requested = False  # exit with RESTART_EXIT so scripts/cv relaunches the app
         self.front = Front(self, front_model)
+
+    # ---- approval mode ---------------------------------------------------------------------------------
+    @property
+    def full_approval(self):
+        """Auto mode: work starts without a review card and runs without asking, except the risky steps."""
+        return self.mode == "auto"
+
+    @full_approval.setter
+    def full_approval(self, on):
+        self.mode = "auto" if on else "ask"
+
+    def set_mode(self, mode, by="voice"):
+        """Switch the approval mode; applies to running tasks at their next step. → the mode, or None if unknown."""
+        mode = {"full": "auto", "accept_edits": "edits", "accept edits": "edits", "default": "ask"}.get(mode, mode)
+        if mode not in MODES:
+            return None
+        changed, self.mode = mode != self.mode, mode
+        save_mode(mode)
+        cvlog.log.event("approval-mode", f"{mode} (by {by})")
+        self.ui.status(f"approval mode: {MODE_NAMES[mode]}")
+        if changed and by != "voice":  # Haiku switched it itself otherwise, so it knows
+            self.front_notes.append(f"[The user switched the approval mode to {MODE_NAMES[mode]} with the keyboard.]")
+        return mode
+
+    def cycle_mode(self):
+        """Shift+Tab: ask → accept edits → auto → ask."""
+        return self.set_mode(MODES[(MODES.index(self.mode) + 1) % len(MODES)], by="keyboard")
 
     # ---- saved tasks -----------------------------------------------------------------------------------
     def next_task_id(self):
@@ -811,7 +930,7 @@ class App:
             self.ui.status(f"{task.id}: starting — your request was the go-ahead — {task.title}")
             return await self._start(task)
         if self.full_approval:
-            self.ui.status(f"{task.id}: starting with full approval — {task.title}")
+            self.ui.status(f"{task.id}: starting (auto mode) — {task.title}")
             return await self._start(task)
         while True:
             body = f"project: {task.project_dir}   back end: {task.model}\n\n{task.prompt}"
@@ -832,7 +951,7 @@ class App:
             if (other is not task and other.state == "idle" and other.project_dir == task.project_dir
                     and not other.backend.running_workers()):
                 await other.backend.close()
-        task.state = "planning" if task.kind == "job" or not (self.full_approval or task.go_ahead) else "building"
+        task.state = "planning" if task.kind == "job" or not (self.mode != "ask" or task.go_ahead) else "building"
         task.backend = self.backend_for(task)
         await task.backend.start()
         if config.get()["behaviour"]["auto_show_output"]:
@@ -854,8 +973,12 @@ class App:
             lines.append("[saved from an earlier session, resumable with continue_task: " + "; ".join(saved) + "]")
         if self.decisions:
             lines.append("[waiting on the user: " + ", ".join(f"{d.id} ({d.title})" for d in self.decisions) + "]")
-        if self.full_approval:
-            lines.append("[full approval is on: work starts and runs without asking; only report results]")
+        if self.mode == "auto":
+            lines.append("[approval mode: auto. Work starts and runs without asking; only risky steps and job plans "
+                         "come back. Only report results]")
+        elif self.mode == "edits":
+            lines.append("[approval mode: accept edits. File edits run without asking; commands that change things "
+                         "still come back]")
         return "\n".join(lines)
 
 
@@ -899,7 +1022,7 @@ class Front:
                             "user agrees.", FRESH_SCHEMA, self._fresh_start),
             "close_task": ("Close an open or saved task the user is done with (\"forget it\", \"close that\").",
                            CLOSE_SCHEMA, self._close),
-            "set_approval_mode": ("Switch between asking for each plan and step (ask) and blanket approval (full).",
+            "set_approval_mode": ("Switch the approval mode, like Claude Code's: ask, edits (accept edits) or auto. It stays until changed.",
                                   MODE_SCHEMA, self._set_mode),
             "show_output": ("Open a task's window on the user's screen: its full output when a round is finished, "
                             "or its work live while it runs. For when they want to read, see or watch it (\"show "
@@ -1040,7 +1163,7 @@ class Front:
     async def _propose_task(self, args):
         tid = args.get("task_id")
         # Safety net for "work on my luffy project" drafted in plain ~: point Haiku at the project before anything
-        # starts (with full approval it would start straight away). A second call in ~ goes through.
+        # starts (in auto mode it would start straight away). A second call in ~ goes through.
         home = os.path.realpath(os.path.expanduser("~"))
         if (os.path.realpath(os.path.expanduser(args.get("project_dir", "~"))) == home
                 and self._home_nudged != self.user_turns):
@@ -1080,7 +1203,7 @@ class Front:
                 task.go_ahead = set(words(self.last_user_text))
                 task.prompt += prompt_note("go_note")
             asyncio.create_task(self.app.review_task(task))
-            return (f"Started task {tid} right away ({'their request was the go-ahead' if go else 'full approval'}). "
+            return (f"Started task {tid} right away ({'their request was the go-ahead' if go else 'auto mode'}). "
                     "Say in a few words that you're on it, without repeating what they asked; don't ask for approval.")
         if tid in self.app.tasks and self.app.tasks[tid].state == "draft":
             self.app.tasks[tid].update(args)
@@ -1231,15 +1354,21 @@ class Front:
     async def _set_mode(self, args):
         if err := self._check_quote(args.get("user_quote")):
             return err
-        on = args.get("mode") == "full"
-        self.app.full_approval = on  # read per step in Backend._permission, so it applies to open sessions at once
-        self.app.ui.status(f"approval mode: {'FULL — only risky steps and questions will ask' if on else 'ask'} "
-                           f"(\"{args.get('user_quote')}\")")
-        if on:
-            return ("Full approval is on. Work now starts and runs without checking in, and there's no progress "
-                    "narration; just report results. Risky steps (root, installs, deleting, git push, files outside "
-                    "the project) and your own questions will still come back. Confirm in a sentence and mention that.")
-        return "Back to asking for each plan and step."
+        mode = self.app.set_mode(args.get("mode", ""))
+        if mode is None:
+            return f"Unknown mode {args.get('mode')!r}: use one of {', '.join(MODES)}."
+        self.app.ui.status(f"approval mode: {MODE_NAMES[mode]} (\"{args.get('user_quote')}\")")
+        if mode == "auto":
+            return ("Auto mode is on, and stays on (also after a restart) until they change it. Work starts as soon as "
+                    "you propose it and runs without checking in; just report results. A checker approves risky steps "
+                    "that clearly serve the request (installing packages, services, stopping processes, files outside "
+                    "the project, deleting inside it). Root, git push or history rewrites, deleting outside the "
+                    "project, disk or power commands, publishing and restarting cv still come to them, and so does a "
+                    "job's plan. Confirm in a sentence.")
+        if mode == "edits":
+            return ("Accept-edits mode is on: file edits run without asking and quick tasks skip the plan; a new task "
+                    "still needs their yes, and commands that change things still come to them. Confirm in a few words.")
+        return "Back to ask mode: you check each new task, its plan and each change with them. Confirm in a few words."
 
     async def _find(self, args):
         hits = await asyncio.to_thread(find_projects, args.get("query", ""))
@@ -1390,8 +1519,9 @@ class Backend:
     def __init__(self, app, task, resume=False, plan=False):
         self.app, self.task = app, task
         self.agents = {}  # subagent task_id → its type, while it runs (a background one outlives the round)
-        # With full approval (or a request that was its own go-ahead) it skips the separate planning round (it still
-        # thinks before acting); otherwise plan mode first, so the plan can be reviewed. Never acceptEdits: in that mode Claude
+        # In auto or accept-edits mode (or for a request that was its own go-ahead) it skips the separate planning
+        # round (it still thinks before acting); in ask mode, plan mode first, so the plan can be reviewed. Never the
+        # CLI's own acceptEdits: in that mode Claude
         # Code also runs rm/mv/mkdir in the project by itself, so they'd skip the app's risk check. Auto-approval
         # happens here, in _permission.
         # A resumed session (earlier launch, or after a restart) carries on in default mode unless a plan is wanted.
@@ -1411,7 +1541,7 @@ class Backend:
 
     # ---- hooks (orchestrator.JobBackend overrides them) --------------------------------------------------
     def _mode(self, plan, resume):
-        return "plan" if plan or not (self.app.full_approval or self.task.go_ahead or resume) else "default"
+        return "plan" if plan or not (self.app.mode != "ask" or self.task.go_ahead or resume) else "default"
 
     def _extra_args(self):
         return []
@@ -1601,10 +1731,10 @@ class Backend:
         t = self.task
         if name == "AskUserQuestion":
             return await self._ask_user(inp)
-        if name == "ExitPlanMode" and (self.app.full_approval or t.go_ahead) and not t.review_next_plan:
+        if name == "ExitPlanMode" and (self.app.mode != "ask" or t.go_ahead) and not t.review_next_plan:
             t.state = "building"
             t.digest.append("plan made and auto-approved")
-            self.app.ui.dim(f"  {t.id} │ plan auto-approved (full approval)")
+            self.app.ui.dim(f"  {t.id} │ plan auto-approved ({MODE_NAMES[self.app.mode]} mode)")
             return self._allow(inp, "default")
         if name == "ExitPlanMode":
             t.review_next_plan = False
@@ -1628,25 +1758,60 @@ class Backend:
             t.digest.append("plan sent back for changes")
             return {"behavior": "deny", "message": "The user wants changes to the plan: " + (note or "revise it") +
                                                    ". Revise the plan and call ExitPlanMode again."}
+        from orchestrator import READ_TOOLS, read_only  # imports this module, so only once it's loaded
         verb, target, body = describe_tool(name, inp)
         why = risk(name, inp, t.project_dir)
-        if not why and (self.app.full_approval or t.go_ahead or (t.auto_edits and name in EDIT_TOOLS)):
+        mode = self.app.mode
+        if name in READ_TOOLS:  # looking never needs a yes, in any mode, except at keys and credentials
+            if reads_secrets(inp):
+                return await self._ask_step(inp, verb, target, body, "it reads keys or credentials")
+            return self._allow(inp)
+        if not why and name in SHELL_TOOLS and read_only(inp.get("command", "")):
+            t.digest.append(f"read-only: {verb} {target}")
+            self.app.ui.dim(f"  {t.id} │ ✓ read-only: {verb} {target}")
+            return self._allow(inp)
+        edit = name in EDIT_TOOLS
+        if not why and (mode == "auto" or t.go_ahead or (edit and (mode == "edits" or t.auto_edits))):
             t.digest.append(f"auto-approved: {verb} {target}")
-            self.app.ui.dim(f"  {t.id} │ auto-approved: {verb} {target}")
+            self.app.ui.dim(f"  {t.id} │ auto-approved ({MODE_NAMES[mode]}): {verb} {target}")
             return self._allow(inp)
         if why and t.go_ahead and bool(IMPLIED_BY.get(why, set()) & t.go_ahead):
             t.digest.append(f"done as asked: {verb} {target}")
             self.app.ui.dim(f"  {t.id} │ approved by your request ({why}): {verb} {target}")
             return self._allow(inp)
-        return await self._ask_step(inp, verb, target, body, why)
+        checker = ""
+        if why and mode == "auto" and checker_may_judge(why, name, inp, t.project_dir):
+            ok, checker = await self._check_risky(name, inp, verb, target, why)
+            if ok:
+                decided_by("step_checker")
+                t.digest.append(f"checker approved ({why}): {verb} {target}")
+                self.app.ui.dim(f"  {t.id} │ ✓ checked ({why}): {verb} {target}")
+                return self._allow(inp)
+        return await self._ask_step(inp, verb, target, body, why, checker)
 
-    async def _ask_step(self, inp, verb, target, body, why):
+    async def _check_risky(self, name, inp, verb, target, why):
+        """Auto mode: let the step checker judge a risky step of a quick task against what the user asked for."""
+        from orchestrator import run_checker, step_text
+        t = self.task
+        ask = (f"THE USER'S TASK (they are in auto mode, so they want it done without being asked):\n{t.prompt[:4000]}"
+               f"\n\nTHEIR LATEST REQUEST: {t.last_asked or '(none)'}\n\nTHIS STEP IS RISKY: {why}. Allow it only if "
+               "the task clearly calls for it and it is the careful way to do it; when in doubt refuse, and the user "
+               f"is asked instead.\n\nTHE STEP: {name} ({verb} {target})\n{step_text(inp)}")
+        ok, reason = await run_checker(t, ask, f"task-{t.id}", f"{verb} {target} ({why})")
+        if not ok:
+            t.digest.append(f"checker unsure ({why}): {verb} {target}")
+        return ok, reason
+
+    async def _ask_step(self, inp, verb, target, body, why, checker=""):
         """Ask the user about one step, through Haiku."""
         t = self.task
         t.steps += 1
         d = self.app.new_decision(f"{t.id}-step{t.steps}", "tool", f"{t.id}-step{t.steps} · {verb} {target}", body, t)
-        caution = (f" This is a step you always check first, even with full approval ({why}); say that in a few "
-                   "plain words, as your own habit." if why and self.app.full_approval else "")
+        caution = ""
+        if why and self.app.mode == "auto":
+            caution = (f" Auto mode is on, but this step still comes to the user ({why}"
+                       + (f"; the checker wasn't sure: {checker}" if checker else "") + "); say that in a few plain "
+                       "words, as your own habit.")
         decided_by("user")
         ok, note, scope = await self.app.ask(d, announce=(
             f"[Decision {d.id} needed: for task {t.id} you need to {verb} {target}.\nDETAILS (may be shortened):\n"

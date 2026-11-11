@@ -37,7 +37,7 @@ import cvlog
 import platform_util
 import sessions
 from claude_proto import subscription_env
-from agents import SHELL_TOOLS, prompt_note, Backend, STATE_DIR, Task, decided_by, describe_tool, risk
+from agents import SHELL_TOOLS, prompt_note, Backend, STATE_DIR, Task, decided_by, describe_tool, risk, checker_may_judge
 
 # A job's usage cap, in Claude Code's list-price estimate. On a subscription nothing is charged: the cap only stops
 # one job from eating the plan's 5-hour and weekly limits. Never spoken as money.
@@ -98,45 +98,97 @@ HAND_BACK_SCHEMA = {"type": "object", "properties": {"reason": {"type": "string"
 # Commands that only look (or run the tests), so the step checker has nothing to judge. Each part of a command line
 # must be one of these, with no output redirection, substitution or here-doc: anything else goes to the checker.
 LOOK = {"ls", "cat", "head", "tail", "wc", "grep", "egrep", "rg", "pwd", "echo", "printf", "file", "stat", "du",
-        "diff", "cmp", "cut", "tr", "which", "type", "nl", "true", "realpath", "basename", "dirname", "date", "pytest"}
+        "diff", "cmp", "cut", "tr", "which", "type", "nl", "true", "realpath", "basename", "dirname", "date", "pytest",
+        # looking at the system: hardware, processes, disks, users
+        "lsmod", "lsusb", "lspci", "lsblk", "lscpu", "ps", "pgrep", "free", "uname", "id", "whoami", "groups", "df",
+        "uptime", "hostname", "nproc", "tree", "readlink", "uniq", "tac", "column", "jq", "md5sum", "sha256sum",
+        "sensors", "fc-list", "locale", "test", "["}
 GIT_LOOK = {"status", "diff", "log", "show", "blame", "ls-files", "rev-parse", "grep", "shortlog", "describe"}
+SYSTEMCTL_LOOK = {"status", "list-units", "list-unit-files", "list-timers", "list-sockets", "list-dependencies",
+                  "is-active", "is-enabled", "is-failed", "show", "cat"}
+JOURNALCTL_WRITES = ("--vacuum", "--rotate", "--flush", "--sync", "--relinquish", "--setup-keys", "-f", "--follow")
+HYPRCTL_LOOK = {"clients", "monitors", "workspaces", "activewindow", "activeworkspace", "devices", "getoption",
+                "version", "layers", "binds", "instances", "systeminfo", "cursorpos", "animations", "globalshortcuts",
+                "configerrors"}
+PACMAN_QUERY = re.compile(r"-Q\w*|-S[sigl]+|-F[^y\s]*|-V|--version|-h|--help")  # never -S, -Sy, -Syu, -R, -U, -Fy
 SEGMENT = re.compile(r"&&|\|\||;|\||\n")
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
 SED_PRINT = re.compile(r"""^['"]?(\d+|\$)(,(\d+|\$))?p['"]?$""")  # sed -n 10,40p
+# A quoted argument such as grep -E 'wacom|huion' holds no command separators or redirections: blank it out first.
+QUOTED = re.compile(r"'[^']*'|\"[^\"$`\\]*\"")
+
+
+def _unquote_specials(command):
+    return QUOTED.sub(lambda m: m.group(0) if not re.search(r"[|&;<>\n]", m.group(0)) else "''", command)
+
+
+def _looks(cmd, rest):
+    """One command of a line (already split into words): True when it only reads."""
+    if cmd in ("cd", "export") or cmd in LOOK:
+        return True
+    if cmd == "sort":
+        return not any(a.startswith(("-o", "--output")) for a in rest)
+    if cmd == "sed":
+        return rest[:1] == ["-n"] and len(rest) > 1 and bool(SED_PRINT.match(rest[1]))
+    if cmd == "find":
+        return not {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"} & set(rest)
+    if cmd == "git":
+        return bool(rest) and rest[0] in GIT_LOOK and "--output" not in " ".join(rest)
+    if cmd in ("python", "python3"):
+        return rest[:2] == ["-m", "pytest"]
+    if cmd == "uv":
+        return rest[:2] == ["run", "--no-sync"] and ("pytest" in rest[2:3] or rest[2:5] == ["python", "-m", "pytest"])
+    if cmd == "systemctl":
+        sub = next((a for a in rest if not a.startswith("-")), "status")
+        return sub in SYSTEMCTL_LOOK
+    if cmd == "journalctl":
+        return not any(a.startswith(JOURNALCTL_WRITES) for a in rest)
+    if cmd in ("pacman", "yay", "paru"):
+        return bool(rest) and bool(PACMAN_QUERY.fullmatch(rest[0]))
+    if cmd == "hyprctl":
+        sub = next((a for a in rest if not a.startswith("-")), "")
+        return sub in HYPRCTL_LOOK
+    return False
 
 
 def read_only(command):
-    """True when every part of a Bash command line only reads files or runs the tests."""
+    """True when every part of a Bash command line only reads files or the system's state, or runs the tests."""
     if not command.strip() or re.search(r"`|\$\(|<<|<\(|>\(", command):
         return False
+    command = _unquote_specials(command)
     plain = re.sub(r"\d?>&\d|\d?>\s*/dev/null", "", command)
-    if ">" in plain or re.search(r"(?<!&)&(?!&)", plain):  # writes a file, or runs something in the background
+    if ">" in plain or "<" in plain or re.search(r"(?<!&)&(?!&)", plain):  # writes a file, or runs in the background
         return False
     for seg in SEGMENT.split(command):
         words = seg.split()
         while words and ASSIGN.match(words[0]):  # VAR=value prefixes
             words.pop(0)
-        if not words:
-            continue
-        cmd, rest = words[0], words[1:]
-        if cmd in ("cd", "export") or cmd in LOOK:
-            continue
-        if cmd == "sort" and not any(a.startswith(("-o", "--output")) for a in rest):
-            continue
-        if cmd == "sed" and rest[:1] == ["-n"] and len(rest) > 1 and SED_PRINT.match(rest[1]):
-            continue
-        if cmd == "find" and not {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf",
-                                  "-fls"} & set(rest):
-            continue
-        if cmd == "git" and rest and rest[0] in GIT_LOOK and "--output" not in " ".join(rest):
-            continue
-        if cmd in ("python", "python3") and rest[:2] == ["-m", "pytest"]:
-            continue
-        if cmd == "uv" and rest[:2] == ["run", "--no-sync"] and ("pytest" in rest[2:3] or rest[2:5] == [
-                "python", "-m", "pytest"]):
-            continue
-        return False
+        if words and not _looks(words[0], words[1:]):
+            return False
     return True
+
+
+async def run_checker(task, ask, log_key, what):
+    """Ask the step checker (models.checker, no tools) about one step. → (True | False | None for no answer, reason)"""
+    cmd = [platform_util.claude_exe(), "-p", "--model", config.get()["models"]["checker"], "--output-format", "json",
+           "--tools", "", "--system-prompt", config.prompt("step_check"), "--setting-sources", "", "--strict-mcp-config",
+           "--no-session-persistence"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=task.project_dir, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=subscription_env({"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"}))
+        out, _ = await asyncio.wait_for(proc.communicate(ask.encode()), CHECK_TIMEOUT_S)
+        res = json.loads(out)
+        task.check_cost += res.get("total_cost_usd") or 0
+        m = re.search(r"\{.*\}", res.get("result", ""), re.S)
+        verdict = json.loads(m.group(0)) if m else {}
+    except (OSError, ValueError, asyncio.TimeoutError) as e:
+        cvlog.log.event(f"{log_key}:check-error", repr(e))
+        return None, ""
+    ok, reason = verdict.get("allow"), verdict.get("reason", "")
+    cvlog.log.event(f"{log_key}:check", f"{what} -> {ok} ({reason})")
+    return (bool(ok) if isinstance(ok, bool) else None), reason
 
 
 def state_dir(project_dir):
@@ -339,15 +391,16 @@ class JobBackend(Backend):
             return self._deny("usage cap reached", "The job's usage cap is reached. Stop and report Status: blocked; "
                                                    "the user decides whether to continue.")
         verb, target, body = describe_tool(name, inp)
-        if why := risk(name, inp, t.project_dir):  # hard to undo: always the user's call, as before
-            return await self._ask_step(inp, verb, target, body, why)
-        if name == "Bash" and read_only(inp.get("command", "")):
+        why = risk(name, inp, t.project_dir)
+        if why and not (self.app.mode == "auto" and checker_may_judge(why, name, inp, t.project_dir)):
+            return await self._ask_step(inp, verb, target, body, why)  # hard to undo: the user's call
+        if not why and name == "Bash" and read_only(inp.get("command", "")):
             decided_by("read_only")
             self.app.ui.dim(f"  {t.id} │ ✓ read-only: {w.kind} {verb} {target}")
             return self._allow(inp)
-        ok, reason = await self._check(w, name, inp, verb, target)
-        if ok is None:  # the checker didn't answer: ask the user instead of guessing
-            return await self._ask_step(inp, verb, target, body, None)
+        ok, reason = await self._check(w, name, inp, verb, target, why)
+        if ok is None or (why and not ok):  # no answer, or a risky step it won't pass: ask the user, don't guess
+            return await self._ask_step(inp, verb, target, body, why, reason)
         decided_by("step_checker")
         if not ok:
             return self._deny(f"checker refused {w.kind}: {verb} {target} — {reason}",
@@ -360,7 +413,7 @@ class JobBackend(Backend):
         return self._allow(inp)
 
     async def _plan(self, name, inp, req):
-        """A job's plan (or a change to it) always goes to the user, even with full approval: it's what authorises
+        """A job's plan (or a change to it) always goes to the user, even in auto mode: it's what authorises
         the workers' steps. The approved plan is what the step checker checks against."""
         t = self.task
         t.review_next_plan = True
@@ -389,33 +442,20 @@ class JobBackend(Backend):
         self.app.ui.dim(f"  {self.task.id} │ ✗ {what}")
         return {"behavior": "deny", "message": message}
 
-    async def _check(self, w, name, inp, verb, target):
+    async def _check(self, w, name, inp, verb, target, why=None):
         """The step checker. → (True | False | None for no answer, reason)"""
         t = self.task
         step = step_text(inp)
         ask = (f"APPROVED PLAN:\n{t.plan or '(not recorded)'}\n\nDONE LIST:\n{self._done_text(self.done_list()) or 'none yet'}"
                f"\n\nWORKER: {w.kind}\nITS BRIEF:\n{w.brief or w.description}\n\nFILES IT EDITED SO FAR: "
                f"{', '.join(sorted(w.files)) or 'none'}\n\nTHE STEP: {name} ({verb} {target})\n{step}")
-        cmd = [platform_util.claude_exe(), "-p", "--model", config.get()["models"]["checker"], "--output-format", "json", "--tools", "",
-               "--system-prompt", config.prompt("step_check"), "--setting-sources", "", "--strict-mcp-config",
-               "--no-session-persistence"]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=t.project_dir, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=subscription_env({"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"}))
-            out, _ = await asyncio.wait_for(proc.communicate(ask.encode()), CHECK_TIMEOUT_S)
-            res = json.loads(out)
-            t.check_cost += res.get("total_cost_usd") or 0
-            m = re.search(r"\{.*\}", res.get("result", ""), re.S)
-            verdict = json.loads(m.group(0)) if m else {}
-        except (OSError, ValueError, asyncio.TimeoutError) as e:
-            cvlog.log.event(f"job-{t.id}:check-error", repr(e))
-            return None, ""
-        ok, reason = verdict.get("allow"), verdict.get("reason", "")
-        cvlog.log.event(f"job-{t.id}:check", f"{w.kind} {verb} {target} -> {ok} ({reason})")
+        if why:  # auto mode: a risky step the user lets the checker judge
+            ask += (f"\n\nTHIS STEP IS RISKY: {why}. The user is in auto mode. Allow it only if the brief and plan "
+                    "clearly call for it and it is the careful way to do it; when in doubt refuse, and the user is "
+                    "asked instead.")
+        ok, reason = await run_checker(t, ask, f"job-{t.id}", f"{w.kind} {verb} {target}")
         t.digest.append(f"check {'ok' if ok else 'refused'}: {verb} {target}")
-        return (bool(ok) if isinstance(ok, bool) else None), reason
+        return ok, reason
 
     # ---- results ----------------------------------------------------------------------------------------
     async def _after_round(self, text, ok):

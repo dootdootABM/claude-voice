@@ -20,9 +20,10 @@ Talk normally — it listens hands-free. Or type a message and press Enter.
   /quiet /normal /chatty   how much progress it narrates while working
   /mode                    switch always-listening / push to talk       /ptt   (push to talk) start / stop talking
   /tasks                   list tasks                 /kill <task>     stop or close a task
+  /approval [ask|edits|auto]   approval mode, like Claude Code (alone: cycle ask → accept edits → auto)
   /quit
 Decisions (task drafts, plans, steps): just answer Haiku out loud. The keyboard works too when a card is shown:
-  a = approve   r [note] = reject / send back   e = edit the task prompt   m <sonnet|opus|haiku> = back-end model"""
+  a = approve   r [note] = reject / send back   e = edit the task prompt   m <sonnet|opus|haiku|fable> = back-end model"""
 
 CARD_KEYS = {"task": "answer out loud, or: [a]pprove & plan   [e]dit   [m]odel <name>   [r]eject [note]",
              "plan": "answer out loud, or: [a]pprove plan   [r] <what to change>",
@@ -105,6 +106,10 @@ async def main(opts):
                 ui.status(f"input: {engine.input_mode.replace('_', ' ')}")
             elif cmd == "ptt" and engine.listener:
                 ui.status(engine.ptt_command("toggle"))
+            elif cmd == "approval":
+                mode = app.set_mode(arg.strip(), by="keyboard") if arg.strip() else app.cycle_mode()
+                if mode is None:
+                    ui.error("use /approval ask, /approval edits or /approval auto (or /approval alone to cycle)")
             elif cmd in ("quiet", "normal", "chatty"):
                 app.verbosity = cmd
                 ui.status(f"narration: {cmd}")

@@ -28,12 +28,12 @@ def backend():
     project = os.path.join(os.path.abspath(os.sep), "cv-test-project")
     b.task = types.SimpleNamespace(id="t1", project_dir=project, digest=[], plan="1. a piece",
                                    budget=10.0, spent_before=0.0, check_cost=0.0, context=0, prompt="the job")
-    b.app = types.SimpleNamespace(ui=types.SimpleNamespace(dim=lambda m: None, status=lambda m: None))
+    b.app = types.SimpleNamespace(mode="ask", ui=types.SimpleNamespace(dim=lambda m: None, status=lambda m: None))
     b.dir, b.workers, b.uses, b.proc_cost, b.marked_at = o.state_dir(b.task.project_dir), {}, {}, 0.0, 0
     b.checked = []
     b.hand_on, b.carry_on = False, False
 
-    async def check_stub(w, name, inp, verb, target):
+    async def check_stub(w, name, inp, verb, target, why=None):
         b.checked.append((w.kind, name))
         return True, "fine"
 

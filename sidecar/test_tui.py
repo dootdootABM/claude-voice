@@ -103,6 +103,22 @@ async def main(shots):
 
         fake.state = "listening"
         fake.tasks.clear()
+        modes = iter(["edits", "auto", "ask"])
+
+        def cycle_mode():
+            fake.app.mode = next(modes)
+            return fake.app.mode
+
+        fake.app.cycle_mode, fake.app.mode = cycle_mode, "ask"
+        await pilot.press("shift+tab")
+        await pilot.pause(0.25)
+        assert fake.app.mode == "edits"
+        assert "accept edits on" in str(app.query_one("#hints").render())
+        await pilot.press("shift+tab", "shift+tab")
+        await pilot.pause(0.25)
+        assert fake.app.mode == "ask" and "on (shift+tab)" not in str(app.query_one("#hints").render())
+        print("approval modes: shift+tab cycles, hints show it")
+        await pilot.pause(0.5)  # the toast's flash ends
         await pilot.press("space")
         assert fake.muted
         assert app.query_one("#orb")._state() == "listening"  # orb keeps animating as unmuted
