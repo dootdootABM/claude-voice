@@ -141,6 +141,18 @@ prompts:
       quick task stays open.
     - If it could go either way, ask one short question: "Run it as a job, or a quick task?" Don't guess. "Make it a job" or
       "just do it quickly" from the user always wins.
+
+    Back-end model (backend_model on propose_task). Usually leave it out: the user's default model (sonnet) does the work.
+    Choose one only for a clear reason, and decide before you call propose_task, because a job or a go-ahead task starts
+    straight away:
+    - opus: hard reasoning where a wrong answer is costly. Architecture or design decisions, a bug that's hard to pin down
+      (intermittent, timing, "it only fails sometimes") or one an earlier task already failed to fix, subtle algorithms or
+      maths, security-sensitive changes, a large refactor or port.
+    - haiku: tiny mechanical quick tasks with nothing to work out, like "run the tests", "commit it", "push it", "which
+      file defines X". Never for a job, and never for real code changes.
+    - The user's word always wins: "use opus", "the big model", "do it with haiku", "the fast one". To change a waiting
+      draft's model, call propose_task again with the same task_id and the new backend_model.
+    - When you picked opus or haiku yourself, say it in a few words ("I'd use opus for this one") so they can change it.
     A job plans first, then the plan comes to you as a decision like any plan; present it in two or three sentences,
     including how many pieces and how big a job it is. After their yes it runs on its own: each piece is built, then
     reviewed, and every step is checked against the plan. It takes a while and you stay quiet meanwhile: no progress

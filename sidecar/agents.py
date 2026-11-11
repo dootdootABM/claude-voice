@@ -93,7 +93,11 @@ TASK_SCHEMA = {
         "prompt": {"type": "string", "description": "Complete, self-contained instructions for doing the work."},
         "project_dir": {"type": "string", "description": "Absolute path or ~/path of the project."},
         "backend_model": {"type": "string", "enum": ["sonnet", "opus", "haiku"],
-                          "description": "Default sonnet; opus only for hard design work."},
+                          "description": "Usually omit it: the user's default (sonnet) runs the task. opus: hard "
+                          "reasoning where a wrong answer is costly (architecture or design decisions, a bug that is "
+                          "hard to pin down or a fix that already failed, subtle algorithms or maths, security-"
+                          "sensitive changes, a large refactor). haiku: only tiny mechanical quick tasks (run the "
+                          "tests, commit, push, a simple lookup), never a job. The user naming a model always wins."},
         "spoken_summary": {"type": "string", "description": "One sentence to say out loud."},
         "go_ahead": GO_AHEAD,
         "show_output": SHOW,
@@ -103,6 +107,27 @@ TASK_SCHEMA = {
     },
     "required": ["title", "prompt", "project_dir", "spoken_summary"],
 }
+BACKEND_MODELS = ("sonnet", "opus", "haiku")
+
+
+def pick_backend_model(args, user_text, default_job_model):
+    """Clean up propose_task's backend_model in place: a stray spelling ("Opus 4", "claude-sonnet") becomes its alias,
+    anything unknown is dropped (the configured default applies), and a job on haiku goes back to the job default
+    unless the user asked for haiku themselves. Returns a note for the front agent, or ""."""
+    raw = args.get("backend_model")
+    if not raw:
+        return ""
+    name = next((m for m in BACKEND_MODELS if m in str(raw).lower()), None)
+    if name is None:
+        args.pop("backend_model")
+        return f" (backend_model {raw!r} isn't one of {', '.join(BACKEND_MODELS)}; using the default.)"
+    args["backend_model"] = name
+    if name == "haiku" and args.get("route") == "job" and "haiku" not in words(user_text):
+        args["backend_model"] = default_job_model
+        return f" (A job doesn't run on haiku unless the user asks for it; using {default_job_model}.)"
+    return ""
+
+
 DECIDE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1006,6 +1031,13 @@ class Front:
         return None
 
     async def _propose(self, args):
+        args = dict(args)
+        note = pick_backend_model(args, self.last_user_text, config.get()["models"]["job"])
+        if note:
+            self.app.ui.status("back-end model:" + note)
+        return await self._propose_task(args) + note
+
+    async def _propose_task(self, args):
         tid = args.get("task_id")
         # Safety net for "work on my luffy project" drafted in plain ~: point Haiku at the project before anything
         # starts (with full approval it would start straight away). A second call in ~ goes through.
