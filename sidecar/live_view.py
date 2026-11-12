@@ -357,8 +357,10 @@ class Entry(Horizontal):
     Entry > Vertical { width: 1fr; height: auto; }
     Entry Block, Entry Wide, Entry Callout, Entry CodeBlock { margin: 0 0 1 0; }
     Entry CodeBlock > Wide { margin: 0; }
-    Entry Vertical > *:last-child { margin: 0; }
+    Entry Vertical > .last { margin: 0; }
     """
+    # Not `*:last-child`: Textual restyles every widget an order pseudo-class can match on each mount, and `*` matches
+    # them all, so a long log took minutes (quadratic) to draw. The blocks are fixed at compose, so a class does it.
 
     def __init__(self, widgets, pal, mark="●", **kw):
         super().__init__(**kw)
@@ -366,6 +368,8 @@ class Entry(Horizontal):
 
     def compose(self):
         yield Static(Text(self.mark, style=self.pal.hex("foreground")), classes="mark")
+        if self.widgets:
+            self.widgets[-1].add_class("last")
         with Vertical():
             yield from self.widgets
 

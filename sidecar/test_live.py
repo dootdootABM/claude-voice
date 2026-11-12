@@ -512,3 +512,16 @@ def test_open_window_already_open_brings_it_forward(terminal, monkeypatch):
     assert live.open_window("t3", title="cv · t3 · job") is True and focused == []
     assert live.open_window("t3", title="cv · t3 · job") is False  # already open: no second window ...
     assert focused == ["cv · t3 · job"] and len(spawned) == 1  # ... but it's brought to the front
+
+
+def test_raising_the_cap_never_lands_below_whats_used(state):
+    """t12 on 2026-11-12: 45 used, Haiku "raised" the cap to 20, then 40, and the job stayed blocked each time."""
+    b = backend(state)
+    t = agents.Task("t1", {"title": "audit", "project_dir": str(state), "route": "job", "budget_usd": 30})
+    t.spent_before, t.backend, b.task, b.proc_cost = 45.0, b, t, 0.0
+    assert b.task.raise_budget(20) == 65.0  # at or below the usage: counts as headroom on top of it
+    assert b.task.raise_budget(80) == 80.0  # above it: taken as given
+    assert b.task.spent < b.task.budget and not b.task.budget_warned
+    b.task.budget = 40.0
+    note = b.budget_note()
+    assert "budget_usd 90" in note and "cap 40, used 45" in note

@@ -504,7 +504,9 @@ class JobBackend(Backend):
         if not t.budget_warned and self.spent >= BUDGET_WARN * t.budget:
             t.budget_warned = True
             self._live("job", what="budget", spent_pct=round(100 * self.spent / t.budget))
-            return (f"[Job {t.id} has used {self.spent / t.budget:.0%} of its usage cap.] Tell the user in one "
-                    "sentence and ask whether to keep going; if they say yes, raise the cap with continue_task "
-                    "(budget_usd, e.g. double it). It's subscription usage, not money: never mention dollars.")
+            double = 2 * max(t.budget, self.spent)
+            return (f"[Job {t.id} has used {self.spent / t.budget:.0%} of its usage cap (cap {t.budget:.0f}, used "
+                    f"{self.spent:.0f}).] Tell the user in one sentence and ask whether to keep going; if they say yes, "
+                    f"raise the cap with continue_task, budget_usd {double:.0f} (twice as much; it must be more than "
+                    f"{self.spent:.0f}). It's subscription usage, not money: never mention dollars or these numbers.")
         return None

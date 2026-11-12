@@ -713,6 +713,20 @@ class Task:
         self.saved_at = time.time()
 
     @property
+    def spent(self):
+        """A job's usage so far: closed processes, step checks and the running process."""
+        return self.spent_before + self.check_cost + (getattr(self.backend, "proc_cost", 0) or 0)
+
+    def raise_budget(self, asked):
+        """continue_task's budget_usd. A cap at or below what's already used would just block again, and that's never
+        what the user meant by "raise the cap" (Haiku doesn't know the numbers and guessed 20, then 40, for a job that
+        had used 45), so then the number counts as headroom on top of the usage so far. Returns the new cap."""
+        asked = float(asked)
+        self.budget = asked if asked > self.spent else self.spent + asked
+        self.budget_warned = False
+        return self.budget
+
+    @property
     def live_key(self):
         """What names this task's live log and window (live.py): the id plus the instance, so a later task that
         reuses the id never shares them."""
@@ -726,7 +740,7 @@ class Task:
                 "auto_edits": self.auto_edits, "go_ahead": sorted(self.go_ahead), "last_result": self.last_result[:400],
                 "output": self.output, "context": self.context, "nudged": self.nudged,
                 "kind": self.kind, "budget": self.budget, "plan": self.plan, "last_asked": self.last_asked,
-                "spent_before": self.spent_before + self.check_cost + getattr(self.backend, "proc_cost", 0),
+                "spent_before": self.spent,
                 "digest": list(self.digest)[-4:], "saved_at": time.time() if self.state != "saved" else self.saved_at}
 
     @classmethod
@@ -1275,7 +1289,12 @@ class Front:
         said = args["message"]  # their words, for the status lines (the notes below are for the work only)
         task.last_asked = said
         if args.get("budget_usd"):
-            task.budget, task.budget_warned = float(args["budget_usd"]), False
+            was = task.spent >= task.budget
+            cap = task.raise_budget(args["budget_usd"])
+            self.app.ui.status(f"{task.id}: usage cap now {cap:.0f} ({task.spent / cap:.0%} used)")
+            if was:  # it was told the cap stopped it and can't change the cap itself, so say it's lifted
+                args = {**args, "message": args["message"] + "\n\n(The job's usage cap has been raised, so commands "
+                        "will run again: carry on.)"}
         if (task.kind == "job" and not task.active and task.context >= CONTEXT_NUDGES[0]
                 and not (task.backend and task.backend.running_workers())):
             # A long orchestrator starts over from its state file and done list instead of carrying its history.
