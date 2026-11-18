@@ -26,6 +26,7 @@ the repo, so a fresh orchestrator can carry on from them.
 """
 
 import asyncio
+import hashlib
 import itertools
 import json
 import os
@@ -168,10 +169,45 @@ def read_only(command):
     return True
 
 
-async def run_checker(task, ask, log_key, what):
-    """Ask the step checker (models.checker, no tools) about one step. → (True | False | None for no answer, reason)"""
+CHECKER_DIR = os.path.join(STATE_DIR, "checker")
+CHECKER_KEEP_S = 24 * 3600  # a context file older than this belongs to no running check
+
+
+def checker_prompt_file(context=""):
+    """The checker's system prompt as a file: its instructions, then `context` (what stays the same from one check
+    to the next: plan, done list, the worker's brief). Each check is a fresh process, and the system prompt is the
+    one part Claude Code caches apart from the step, so the next check with the same context reads it from the
+    cache; as part of the question it was sent, and counted, in full on every step. The file is named after its
+    content: a different context never rewrites a file a check that is starting up is about to read."""
+    text = config.prompt("step_check") + (f"\n\n{context}" if context else "")
+    path = os.path.join(CHECKER_DIR, hashlib.sha1(text.encode("utf-8")).hexdigest()[:16] + ".md")
+    if not os.path.exists(path):
+        os.makedirs(CHECKER_DIR, exist_ok=True)
+        now = time.time()
+        for name in os.listdir(CHECKER_DIR):  # a new context is the moment to drop the ones no longer in use
+            old = os.path.join(CHECKER_DIR, name)
+            try:
+                if now - os.path.getmtime(old) > CHECKER_KEEP_S:
+                    os.remove(old)
+            except OSError:
+                pass
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    return path
+
+
+async def run_checker(task, ask, log_key, what, context=""):
+    """Ask the step checker (models.checker, no tools) about one step. `context` is the part of the question that
+    repeats between checks (see checker_prompt_file). → (True | False | None for no answer, reason)"""
+    try:
+        prompt_file = checker_prompt_file(context)
+    except OSError as e:
+        cvlog.log.event(f"{log_key}:check-error", repr(e))
+        return None, ""
     cmd = [platform_util.claude_exe(), "-p", "--model", config.get()["models"]["checker"], "--output-format", "json",
-           "--tools", "", "--system-prompt", config.prompt("step_check"), "--setting-sources", "", "--strict-mcp-config",
+           "--tools", "", "--system-prompt-file", prompt_file, "--setting-sources", "", "--strict-mcp-config",
            "--no-session-persistence"]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -266,6 +302,23 @@ class JobBackend(Backend):
                 return f.read()
         except OSError:
             return ""
+
+    def plan_for_checker(self):
+        """The plan part of the checker's context. A job that carries on from saved state (a new task, or one resumed
+        outside plan mode) has no plan of its own recorded: the checker then gets the plan last approved in this
+        project, marked as that, rather than no plan at all."""
+        if self.task.plan:
+            return f"APPROVED PLAN:\n{self.task.plan}"
+        try:
+            with open(self._path("plan.md"), encoding="utf-8") as f:
+                earlier = f.read().strip()
+        except OSError:
+            earlier = ""
+        if not earlier:
+            return "APPROVED PLAN:\n(not recorded)"
+        return ("APPROVED PLAN:\n(This job has no plan of its own recorded; it carries on from saved state. Below is "
+                "the plan the user last approved in this project. Use it as background for what the work is about, "
+                "and judge the step mainly by the worker's brief.)\n" + earlier)
 
     def opening(self, prompt):
         """The first message of a fresh orchestrator: the job, plus where earlier work in this project stands."""
@@ -446,14 +499,17 @@ class JobBackend(Backend):
         """The step checker. → (True | False | None for no answer, reason)"""
         t = self.task
         step = step_text(inp)
-        ask = (f"APPROVED PLAN:\n{t.plan or '(not recorded)'}\n\nDONE LIST:\n{self._done_text(self.done_list()) or 'none yet'}"
-               f"\n\nWORKER: {w.kind}\nITS BRIEF:\n{w.brief or w.description}\n\nFILES IT EDITED SO FAR: "
-               f"{', '.join(sorted(w.files)) or 'none'}\n\nTHE STEP: {name} ({verb} {target})\n{step}")
+        # What repeats from one check to the next goes in the checker's system prompt, which is cached; only the
+        # step is new each time. The brief comes last: it changes with the worker, the plan and done list don't.
+        context = (f"{self.plan_for_checker()}\n\nDONE LIST:\n{self._done_text(self.done_list()) or 'none yet'}"
+                   f"\n\nWORKER: {w.kind}\nITS BRIEF:\n{w.brief or w.description}")
+        ask = (f"FILES THE WORKER EDITED SO FAR: {', '.join(sorted(w.files)) or 'none'}\n\n"
+               f"THE STEP: {name} ({verb} {target})\n{step}")
         if why:  # auto mode: a risky step the user lets the checker judge
             ask += (f"\n\nTHIS STEP IS RISKY: {why}. The user is in auto mode. Allow it only if the brief and plan "
                     "clearly call for it and it is the careful way to do it; when in doubt refuse, and the user is "
                     "asked instead.")
-        ok, reason = await run_checker(t, ask, f"job-{t.id}", f"{w.kind} {verb} {target}")
+        ok, reason = await run_checker(t, ask, f"job-{t.id}", f"{w.kind} {verb} {target}", context)
         t.digest.append(f"check {'ok' if ok else 'refused'}: {verb} {target}")
         return ok, reason
 

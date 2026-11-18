@@ -198,3 +198,73 @@ def test_checker_is_told_when_a_step_is_shortened():
     text = o.step_text({"file_path": "a.py", "content": body})
     assert "1345 more characters, not shown here" in text  # not a file that looks written cut off
     assert "y" * (o.CHECK_TEXT_MAX + 1) not in text
+
+
+def test_checker_context_is_a_prompt_file_named_by_content():
+    a = o.checker_prompt_file("APPROVED PLAN:\n1. a piece")
+    assert a == o.checker_prompt_file("APPROVED PLAN:\n1. a piece")  # same context: same file, so the cache is hit
+    assert a != o.checker_prompt_file("APPROVED PLAN:\n2. another")  # a new context never rewrites one in use
+    with open(a, encoding="utf-8") as f:
+        text = f.read()
+    assert text.startswith(o.config.prompt("step_check")) and text.endswith("APPROVED PLAN:\n1. a piece")
+    stale = os.path.join(o.CHECKER_DIR, "stale.md")
+    with open(stale, "w", encoding="utf-8") as f:
+        f.write("old")
+    os.utime(stale, (0, 0))
+    o.checker_prompt_file("APPROVED PLAN:\n3. a third")  # writing a new one drops those long out of use
+    assert not os.path.exists(stale) and os.path.exists(a)
+
+
+def test_check_sends_only_the_step_and_keeps_the_rest_in_the_context(monkeypatch):
+    b = backend()
+    seen = {}
+
+    async def fake_checker(task, ask, log_key, what, context=""):
+        seen.update(ask=ask, context=context)
+        return True, "fine"
+
+    monkeypatch.setattr(o, "run_checker", fake_checker)
+    monkeypatch.setattr(b, "done_list", lambda: [{"piece": "0. Snapshot", "summary": "made", "files": ["a.sh"]}])
+    w = o.Worker("builder", "brief: edit calc.py only", "builder one")
+    w.files.add("calc.py")
+    inp = {"file_path": "calc.py", "old_string": "a", "new_string": "b"}
+    ok, _ = asyncio.run(o.JobBackend._check(b, w, "Edit", inp, "edit", "calc.py"))
+    assert ok
+    for part in ("APPROVED PLAN:\n1. a piece", "0. Snapshot: made", "WORKER: builder", "brief: edit calc.py only"):
+        assert part in seen["context"] and part not in seen["ask"], part
+    assert "THE STEP: Edit (edit calc.py)" in seen["ask"] and "EDITED SO FAR: calc.py" in seen["ask"]
+    assert "THE STEP" not in seen["context"]  # the step is the only part that is new on each check
+
+
+def test_checker_gets_the_projects_last_plan_when_the_job_has_none(tmp_path):
+    b = backend()
+    b.task.plan, b.dir = "", str(tmp_path)
+    assert b.plan_for_checker() == "APPROVED PLAN:\n(not recorded)"
+    (tmp_path / "plan.md").write_text("1. the earlier plan\n", encoding="utf-8")
+    text = b.plan_for_checker()
+    assert text.endswith("1. the earlier plan") and "no plan of its own" in text
+    b.task.plan = "1. its own plan"
+    assert b.plan_for_checker() == "APPROVED PLAN:\n1. its own plan"
+
+
+def test_run_checker_passes_the_context_as_the_system_prompt_file(monkeypatch):
+    seen = {}
+
+    class Proc:
+        async def communicate(self, data):
+            seen["stdin"] = data.decode()
+            return b'{"total_cost_usd": 0.5, "result": "{\\"allow\\": false, \\"reason\\": \\"not in the brief\\"}"}', b""
+
+    async def fake_exec(*cmd, **kw):
+        seen["cmd"] = cmd
+        return Proc()
+
+    monkeypatch.setattr(o.asyncio, "create_subprocess_exec", fake_exec)
+    task = types.SimpleNamespace(project_dir=os.getcwd(), check_cost=0.0)
+    ok, reason = asyncio.run(o.run_checker(task, "THE STEP: Bash (run ls)", "job-t1", "builder run ls", "APPROVED PLAN:\nthe plan"))
+    assert (ok, reason, task.check_cost) == (False, "not in the brief", 0.5)
+    cmd = seen["cmd"]
+    assert "--system-prompt" not in cmd
+    with open(cmd[cmd.index("--system-prompt-file") + 1], encoding="utf-8") as f:
+        assert f.read().endswith("APPROVED PLAN:\nthe plan")
+    assert seen["stdin"] == "THE STEP: Bash (run ls)"  # the plan is not sent again with every step
