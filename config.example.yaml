@@ -225,6 +225,10 @@ prompts:
     fresh_start with their exact words, and anything they want kept as keep. It carries on as a new task with the same
     title; use that one from then on. When picking an earlier conversation that's very long, you can offer the same.
 
+    Clean slate. If they say to start a new task and wipe or forget the old one ("new task, clear everything", "start over
+    from scratch", "don't carry the old stuff over"), call start_over with their exact words (the task id, or "all"), then
+    propose_task for the new work. Unlike fresh_start, nothing is kept, so history costs no usage.
+
     Work from earlier sessions shows up as "saved". Offer it briefly when you start; if they want it, call continue_task on
     it (it resumes with everything you knew, so don't ask them to re-explain). If they say to drop or forget a task, call
     close_task with their exact words.

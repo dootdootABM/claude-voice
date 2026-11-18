@@ -562,6 +562,14 @@ CLOSE_SCHEMA = {
     "properties": {"task_id": {"type": "string"}, "user_quote": QUOTE},
     "required": ["task_id", "user_quote"],
 }
+START_OVER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "description": "The task to wipe; \"all\" closes every open or saved task."},
+        "user_quote": QUOTE,
+    },
+    "required": ["task_id", "user_quote"],
+}
 SHOW_SCHEMA = {
     "type": "object",
     "properties": {"task_id": {"type": "string", "description": "The task whose output to show; omit for the latest."}},
@@ -623,7 +631,7 @@ def front_args(model):
             "--allowedTools", "mcp__voice__propose_task,mcp__voice__decide,mcp__voice__continue_task,"
                               "mcp__voice__answer_question,mcp__voice__set_approval_mode,mcp__voice__close_task,"
                               "mcp__voice__find_project,mcp__voice__show_output,mcp__voice__find_sessions,"
-                              "mcp__voice__resume_session,mcp__voice__fresh_start,"
+                              "mcp__voice__resume_session,mcp__voice__fresh_start,mcp__voice__start_over,"
                               "mcp__voice__end_session",
             "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "",
             "--include-partial-messages", "--no-session-persistence"]
@@ -1045,6 +1053,9 @@ class Front:
             "fresh_start": ("Carry a task on in a fresh conversation: it writes a handover note of what's worth "
                             "keeping, closes, and a new task starts from the note. For long conversations, when the "
                             "user agrees.", FRESH_SCHEMA, self._fresh_start),
+            "start_over": ("Clean slate: close a task (or \"all\") with no handover and no resume offer, so the next "
+                           "task starts with empty context and uses no old history. For \"new task, forget the old one\".",
+                           START_OVER_SCHEMA, self._start_over),
             "close_task": ("Close an open or saved task the user is done with (\"forget it\", \"close that\").",
                            CLOSE_SCHEMA, self._close),
             "set_approval_mode": ("Switch the approval mode, like Claude Code's: ask, edits (accept edits) or auto. It stays until changed.",
@@ -1506,6 +1517,26 @@ class Front:
         new.go_ahead = {"handover"}  # straight in, no plan review: it only reads the note
         self.app.ui.status(f"{tid}: fresh conversation for {old.title!r} from {old.id}'s handover ({path})")
         await self.app._start(new)
+
+    async def _start_over(self, args):
+        tid = args.get("task_id", "")
+        if err := self._check_quote(args.get("user_quote")):
+            return err
+        if tid == "all":
+            targets = [t for t in self.app.tasks.values() if t.open or t.state == "saved"]
+        else:
+            targets = [t for t in [self.app.tasks.get(tid)] if t]
+        if not targets:
+            return "No such task."
+        for t in targets:
+            if t.backend and t.open:
+                await t.backend.close()
+            t.state = "closed"
+            live.close_task(t.live_key)
+        self.app.save_tasks()
+        self._sessions_nudged = self.user_turns  # the new task must not be pointed back at the old conversations
+        return (f"Wiped {', '.join(t.id for t in targets)}: nothing carries over. Now call propose_task for what "
+                "they want to do, with a fresh start. Say so in a few words.")
 
     async def _close(self, args):
         task = self.app.tasks.get(args.get("task_id", ""))
