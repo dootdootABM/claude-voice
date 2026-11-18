@@ -343,6 +343,23 @@ def render_job(ev, pal):
     return out
 
 
+def render_plan_head(status, note, pal):
+    """The heading of a plan block: waiting for the user, approved, or sent back with their changes."""
+    out = Text()
+    if status == "approved":
+        out.append("● ", style=pal.hex("accent3"))
+        out.append("Plan approved", style=f"bold {pal.hex('foreground')}")
+    elif status == "declined":
+        out.append("● ", style=pal.hex("error"))
+        out.append("Plan sent back for changes", style=f"bold {pal.hex('foreground')}")
+    else:
+        out.append("◆ ", style=pal.hex("accent2"))
+        out.append("Plan · waiting for your approval", style=f"bold {pal.hex('accent2')}")
+    if note:
+        out.append(f"\n  ⎿  {' '.join(str(note).split())}", style=pal.hex("dim"))
+    return out
+
+
 # ---- widgets ---------------------------------------------------------------------------------------------------
 class Line(Static):
     DEFAULT_CSS = "Line { height: auto; }"
@@ -647,6 +664,7 @@ class Flow:
         self.by_id = {}  # a subagent's own task id → SubAgent
         self.expandables = []
         self.pending_perms = []  # permissions that came before their tool call
+        self.plans = {}  # a plan's decision id → [its heading Line, its text]
 
     @property
     def pal(self):
@@ -700,6 +718,8 @@ class Flow:
             await self.tool_result(ev)
         elif kind == "permission":
             await self.permission(c, ev, sub)
+        elif kind == "plan":
+            await self.plan(c, ev)
         elif kind == "subagent_start":
             s = self.subs.get(ev.get("parent"))
             if s is None:  # its Agent call wasn't logged (an old log): a block of its own
@@ -819,9 +839,27 @@ class Flow:
         else:
             await self.put(target, ToolResult(text, err, p))
 
+    async def plan(self, c, ev):
+        """A plan for approval, in full, under a heading that follows the decision. The pending event carries the
+        text; the answer (possibly after a cv restart) only changes the heading."""
+        p, pid, status = self.pal, ev.get("id"), ev.get("status")
+        known = self.plans.get(pid)
+        if known and status != "pending":
+            known[0].update(render_plan_head(status, ev.get("note"), p))
+            return
+        text = str(ev.get("text") or "")
+        head = Line(render_plan_head(status, ev.get("note"), p))
+        md = [w for n in tree(show_output.markdown().parse(text)) if (w := block_widget(n, Renderer(p), p)) is not None]
+        w = Vertical(head, Entry(md, p, " ")) if md else Vertical(head)
+        w.styles.height = "auto"
+        self.plans[pid] = [head, text]
+        await self.put(c, w)
+
     async def job(self, c, ev):
         p = self.pal
         what = ev.get("what")
+        if what == "plan_approved" and any(t.strip() == str(ev.get("plan", "")).strip() for _, t in self.plans.values()):
+            return  # already shown in full by its plan block, whose heading now says approved
         if what == "plan_approved":
             head = Text()
             head.append("● ", style=p.hex("accent3"))
@@ -977,6 +1015,8 @@ class LiveApp(OutputApp):
         elif kind == "job":
             self.job = True
             self.pieces += ev.get("what") == "piece_done"
+        elif kind == "plan":
+            self.step = "plan waiting for your approval" if ev.get("status") == "pending" else ""
         elif kind == "round_end":
             self.running, self.step = False, ""
             self.flow.end_round()

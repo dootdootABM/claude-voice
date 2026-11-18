@@ -30,11 +30,14 @@ carry  parent (the tool_use id of the Agent call that started it) and agent (its
   job            what, ...                an orchestrator milestone: plan_approved {plan}, piece_done {piece, summary,
                                           files}, state_saved, hand_on {tokens}, handed_back {reason},
                                           budget {spent_pct}
+  plan           id, status, text?,       a plan for the user's approval (id: its decision id). status: pending
+                 note?                    (with the full text) | approved | declined (note: the user's changes).
+                                          Kept across a cv restart: a restored pending plan is answered later
   round_end      duration_s, turns, ok,   the round's result
                  out_tokens?
   task_closed    (none)                   the task was closed; the live file goes once its window is gone
 
-Fields marked ? and the kinds thinking, progress, tokens and job came later; a viewer draws a log without them.
+Fields marked ? and the kinds thinking, progress, tokens, job and plan came later; a viewer draws a log without them.
 
 The <task-id> in the file names is the task's live_key (agents.Task: id plus a per-instance uid), so a new task that
 reuses an id never shares a file or window with an older one.
@@ -69,10 +72,12 @@ KINDS = {
     "progress": ("id", "step"),
     "tokens": ("out",),
     "job": ("what",),
+    "plan": ("id", "status"),
     "round_end": ("duration_s", "turns"),
     "task_closed": (),
 }
 DECISIONS = ("approved", "refused")
+PLAN_STATUSES = ("pending", "approved", "declined")
 DECIDERS = ("user", "auto", "step_checker", "rules", "read_only")
 
 
@@ -95,6 +100,8 @@ def problems(ev):
             out.append(f"permission: bad decision {ev.get('decision')!r}")
         if ev.get("by") not in DECIDERS:
             out.append(f"permission: bad by {ev.get('by')!r}")
+    if kind == "plan" and ev.get("status") not in PLAN_STATUSES:
+        out.append(f"plan: bad status {ev.get('status')!r}")
     return out
 
 
@@ -366,7 +373,7 @@ def open_window(task_id, force=False, title=None, cwd=None, file=None):
     False if one was already open. Raises OSError if no window could be started."""
     key = file_key(task_id) if file else task_id
     if not force and window_alive(key):
-        platform_util.focus_window(title)  # Windows: bring it to the front (elsewhere a no-op)
+        platform_util.focus_window(title)  # bring it to the front (Windows, Hyprland; elsewhere a no-op)
         return False
     argv = file_command(task_id, file) if file else viewer_command(task_id)
     started = _now()

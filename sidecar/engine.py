@@ -191,6 +191,9 @@ class Engine:
         cvlog.log.event("ready", f"{time.monotonic() - t_start:.1f}s tts={tts.device} "
                         f"stt={list(self.stt.models) if self.stt else None}")
         asyncio.create_task(self._log_state())
+        # Plans left waiting for an answer come back as decisions; Haiku hears of each from its own announcement.
+        waiting = app.restore_pending_plans()
+        saved = [t for t in saved if t not in waiting]
         if not await self._resume_after_restart():
             if saved:
                 lines = "; ".join(f"{t.id} in {t.project_dir} ({t.title}"
@@ -198,7 +201,7 @@ class Engine:
                                   + (f"; last: {t.last_result[:160]}" if t.last_result else "") + ")" for t in saved)
                 app.front.notify(f"[Open from your last session: {lines}.] Greet the user in a few words and offer "
                                  "to pick that up (in one sentence). Resuming keeps everything you knew.")
-            else:
+            elif not waiting:
                 tts.say("I'm listening.", voice())
 
     async def _resume_after_restart(self):

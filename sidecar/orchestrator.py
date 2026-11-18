@@ -472,11 +472,17 @@ class JobBackend(Backend):
         t.review_next_plan = True
         resp = await super()._permission(name, inp, req)
         if resp.get("behavior") == "allow":
-            t.plan = inp.get("plan", "")
-            self._live("job", what="plan_approved", plan=t.plan)
-            with open(self._path("plan.md"), "w", encoding="utf-8") as f:
-                f.write(t.plan + "\n")
+            self.plan_approved(inp.get("plan", ""))
         return resp
+
+    def plan_approved(self, plan):
+        """Record the approved plan: the step checker's reference, and plan.md for later jobs in this project. Also
+        called for a plan approved after a cv restart (App._saved_plan)."""
+        t = self.task
+        t.plan = plan
+        self._live("job", what="plan_approved", plan=plan)
+        with open(self._path("plan.md"), "w", encoding="utf-8") as f:
+            f.write(plan + "\n")
 
     def running_workers(self):
         return [w.kind for w in self.workers.values() if w.running]

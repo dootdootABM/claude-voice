@@ -670,6 +670,16 @@ def asks_to_carry_out_file(message):
     return bool(_DO_VERB.search(message or "") and _FILE_REF.search(message or ""))
 
 
+def plan_announce(d, t, plan, restored=False):
+    """What Haiku hears when a plan needs the user's answer."""
+    again = (" (cv restarted while it waited; the plan is unchanged and still needs their answer, so remind them "
+             "of it)") if restored else ""
+    return (f"[Decision {d.id} needed: your plan for task {t.id} ({t.title}) is ready{again}.\nPLAN:\n{plan[:4000]}\n]"
+            " Tell the user your plan in two or three natural sentences and check they're happy for you to go"
+            " ahead, in your own words. The full plan is in its output window. Answer follow-up questions from the"
+            " plan. Never read code aloud.")
+
+
 class Decision:
     """Something only the user can answer. kind: task | plan | tool | question."""
 
@@ -697,6 +707,8 @@ class Task:
         self.steps = 0
         self.auto_edits = False  # the user said to stop asking about edits; lasts for the whole task
         self.review_next_plan = False  # "plan first" asked for: show the plan even in auto mode
+        self.pending_plan = None  # {"id", "text"}: a plan waiting for the user's answer; survives a cv restart
+        self.plans = 0  # plans presented so far, for unique decision ids (t3-plan, t3-plan2) across restarts
         self.go_ahead = set()  # words of a request that was its own go-ahead ("commit it"); lasts one round
         self.digest = collections.deque(maxlen=12)
         self.session_id = None  # the Claude Code session, so the work can be resumed later
@@ -748,6 +760,7 @@ class Task:
                 "auto_edits": self.auto_edits, "go_ahead": sorted(self.go_ahead), "last_result": self.last_result[:400],
                 "output": self.output, "context": self.context, "nudged": self.nudged,
                 "kind": self.kind, "budget": self.budget, "plan": self.plan, "last_asked": self.last_asked,
+                "pending_plan": self.pending_plan, "plans": self.plans,
                 "spent_before": self.spent,
                 "digest": list(self.digest)[-4:], "saved_at": time.time() if self.state != "saved" else self.saved_at}
 
@@ -764,6 +777,9 @@ class Task:
         t.kind, t.budget, t.plan = d.get("kind", "quick"), d.get("budget", 10.0), d.get("plan", "")
         t.spent_before = d.get("spent_before", 0.0)
         t.last_asked = d.get("last_asked", "")
+        pending = d.get("pending_plan")
+        t.pending_plan = pending if isinstance(pending, dict) and pending.get("id") and pending.get("text") else None
+        t.plans = d.get("plans", 0)
         t.digest.extend(d.get("digest", []))
         return t
 
@@ -808,6 +824,7 @@ class App:
         self.exit_requested = False
         self.restart_requested = False  # exit with RESTART_EXIT so scripts/cv relaunches the app
         self.front = Front(self, front_model)
+        self.output_was_open = False  # the last show_output found the task's window already open
 
     # ---- approval mode ---------------------------------------------------------------------------------
     @property
@@ -910,6 +927,7 @@ class App:
             self.ui.error(f"couldn't open the output window: {e}")
             return f"Couldn't open the window ({e})."
         cvlog.log.event("show-output", f"{task.id} {'opened' if opened else 'already open'}")
+        self.output_was_open = not opened
         if opened:
             self.ui.status(f"{task.id}: output opened in a new window")
         return None
@@ -930,6 +948,50 @@ class App:
             self.decisions.remove(d)
             if self.decisions:
                 self.ui.card(self.decisions[0])
+
+    def drop_decisions(self, task):
+        """A closed task's pending decisions go away (its plan won't be answered any more)."""
+        task.pending_plan = None
+        for d in list(self.decisions):
+            if d.task is task:
+                d.resolve(False, "(task closed)")
+
+    def restore_pending_plans(self):
+        """Plans an earlier launch left waiting for an answer come back as decisions (card, window, Haiku told).
+        Answering one resumes the saved session: approved, it carries out the plan; declined, it revises it.
+        → the tasks with a restored plan. Call it once the event loop runs."""
+        tasks = [t for t in self.tasks.values() if t.state == "saved" and t.pending_plan]
+        for t in tasks:
+            asyncio.create_task(self._saved_plan(t))
+        return tasks
+
+    async def _saved_plan(self, t):
+        p = t.pending_plan
+        d = self.new_decision(p["id"], "plan", f"{p['id']} · plan for {t.title}", p["text"], t)
+        self.show_output(t)
+        ok, note, scope = await self.ask(d, announce=plan_announce(d, t, p["text"], restored=True))
+        if t.state != "saved" or t.pending_plan is not p:
+            return  # closed, or picked up another way in the meantime
+        t.pending_plan = None
+        live.emit(t.live_key, "plan", id=p["id"], status="approved" if ok else "declined", note=note or None)
+        why = "(cv restarted while your plan waited for the user's answer, so the answer comes as this message.)"
+        if ok:
+            t.auto_edits |= scope == "rest_of_task"
+            t.backend = self.backend_for(t, resume=True)
+            if t.kind == "job":
+                t.backend.plan_approved(p["text"])
+            t.state = "building"
+            message = (f"{why} The user approved your plan" + (f", with this note: {note}" if note else "") +
+                       ". You're out of plan mode: carry it out now.")
+        else:
+            t.review_next_plan = True
+            t.backend = self.backend_for(t, resume=True, plan=True)
+            t.state = "planning"
+            message = (f"{why} The user wants changes to your plan: {note or 'revise it'}. Revise the plan and "
+                       "present it again with ExitPlanMode.")
+        self.save_tasks()
+        await t.backend.start(message)
+        self.ui.status(f"{t.id}: resumed with your answer to {p['id']}")
 
     def new_decision(self, did, kind, title, body, task):
         return Decision(did, kind, title, body, task, self.front.user_turns)
@@ -1457,6 +1519,9 @@ class Front:
                 return "No such task."
         if err := self.app.show_output(task):
             return err
+        if self.app.output_was_open:
+            return ("Its window was already open, so it was brought to the front (it may be on another workspace). "
+                    "Say so in a few words; don't claim anything new appeared in it.")
         return "It's open in a window on their screen now. Say so in a few words."
 
     async def _fresh_start(self, args):
@@ -1532,6 +1597,7 @@ class Front:
             if t.backend and t.open:
                 await t.backend.close()
             t.state = "closed"
+            self.app.drop_decisions(t)
             live.close_task(t.live_key)
         self.app.save_tasks()
         self._sessions_nudged = self.user_turns  # the new task must not be pointed back at the old conversations
@@ -1547,6 +1613,7 @@ class Front:
         if task.backend and task.open:
             await task.backend.close()
         task.state = "closed"
+        self.app.drop_decisions(task)
         live.close_task(task.live_key)
         self.app.save_tasks()
         return f"Closed {task.id}."
@@ -1598,7 +1665,6 @@ class Backend:
         self.proc = ClaudeProc(args, cwd=task.project_dir, can_use_tool=self._permission_logged, on_event=self._on_event,
                                sdk_servers=[tools], name=f"task-{task.id}")
         self.questions = 0
-        self.plans = 0
 
     # ---- hooks (orchestrator.JobBackend overrides them) --------------------------------------------------
     def _mode(self, plan, resume):
@@ -1800,14 +1866,20 @@ class Backend:
         if name == "ExitPlanMode":
             t.review_next_plan = False
             plan = inp.get("plan", "")
-            self.plans += 1
-            pid = f"{t.id}-plan" + (str(self.plans) if self.plans > 1 else "")
+            t.plans += 1
+            pid = f"{t.id}-plan" + (str(t.plans) if t.plans > 1 else "")
             d = self.app.new_decision(pid, "plan", f"{pid} · plan for {t.title}", plan, t)
             decided_by("user")
-            ok, note, scope = await self.app.ask(d, announce=(
-                f"[Decision {d.id} needed: your plan for task {t.id} ({t.title}) is ready.\nPLAN:\n{plan[:4000]}\n]"
-                " Tell the user your plan in two or three natural sentences and check they're happy for you to go"
-                " ahead, in your own words. Answer follow-up questions from the plan. Never read code aloud."))
+            # Kept in tasks.json and the live log until answered, so a cv restart brings it back (restore_pending_plans).
+            t.pending_plan = {"id": pid, "text": plan}
+            self._live("plan", id=pid, status="pending", text=plan)
+            self.app.save_tasks()
+            self.app.show_output(t)
+            ok, note, scope = await self.app.ask(d, announce=plan_announce(d, t, plan))
+            if t.pending_plan and t.pending_plan["id"] == pid:
+                t.pending_plan = None
+                self._live("plan", id=pid, status="approved" if ok else "declined", note=note or None)
+                self.app.save_tasks()
             if ok:
                 t.state = "building"
                 t.digest.append("plan approved")

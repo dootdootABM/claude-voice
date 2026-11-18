@@ -175,10 +175,13 @@ def spawn_terminal(argv, cls, title=None, wait=False, cwd=None):
 
 def focus_window(title):
     """Bring the window with exactly this title to the front (restoring it if minimised). → True if found.
-    Windows only, where an open output window otherwise stays behind cv; Windows Terminal keeps the --title it was
-    opened with. Elsewhere it does nothing (→ False)."""
-    if not is_windows() or not title:
+    Windows, where an open output window otherwise stays behind cv (Windows Terminal keeps the --title it was opened
+    with), and Hyprland, where it may sit on another workspace (kitty keeps its --title). Elsewhere it does nothing
+    (→ False)."""
+    if not title:
         return False
+    if not is_windows():
+        return _focus_hyprland(title)
     try:
         import ctypes
         from ctypes import wintypes
@@ -203,6 +206,21 @@ def focus_window(title):
             user32.ShowWindow(found[0], 9)  # SW_RESTORE
         return bool(user32.SetForegroundWindow(found[0]))
     except (OSError, AttributeError):
+        return False
+
+
+def _focus_hyprland(title):
+    if not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") or not shutil.which("hyprctl"):
+        return False
+    try:
+        import json
+        out = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, encoding="utf-8", timeout=2).stdout
+        addr = next((c.get("address") for c in json.loads(out) if c.get("title") == title), None)
+        if not addr:
+            return False
+        r = subprocess.run(["hyprctl", "dispatch", "focuswindow", f"address:{addr}"], capture_output=True, timeout=2)
+        return r.returncode == 0
+    except (OSError, ValueError, subprocess.SubprocessError):
         return False
 
 

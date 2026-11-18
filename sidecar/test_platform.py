@@ -213,6 +213,21 @@ def test_projects_and_theme():
     check("theme with an unreadable palette doesn't raise", theme.Theme(path=bad).hex("accent") == theme.DEFAULTS["accent"])
 
 
-def test_focus_window_is_windows_only():
-    with on("linux"), mock.patch("ctypes.WinDLL", create=True) as dll:
-        check("linux: focus_window does nothing", pu.focus_window("cv · t1") is False and not dll.called)
+def test_focus_window_off_windows():
+    with on("linux"), mock.patch("ctypes.WinDLL", create=True) as dll, \
+            mock.patch.dict(os.environ, {"HYPRLAND_INSTANCE_SIGNATURE": ""}):
+        check("linux without Hyprland: focus_window does nothing", pu.focus_window("cv · t1") is False and not dll.called)
+    clients = '[{"title": "other", "address": "0x1"}, {"title": "cv · t1", "address": "0x2"}]'
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return mock.Mock(stdout=clients if argv[1] == "clients" else "", returncode=0)
+
+    with on("linux"), mock.patch.dict(os.environ, {"HYPRLAND_INSTANCE_SIGNATURE": "x"}), \
+            mock.patch.object(pu.shutil, "which", return_value="/usr/bin/hyprctl"), \
+            mock.patch.object(pu.subprocess, "run", run):
+        check("hyprland: focuses the window with that exact title",
+              pu.focus_window("cv · t1") is True and calls[-1] == ["hyprctl", "dispatch", "focuswindow", "address:0x2"])
+        calls.clear()
+        check("hyprland: no window with that title → False", pu.focus_window("cv · t9") is False and len(calls) == 1)
